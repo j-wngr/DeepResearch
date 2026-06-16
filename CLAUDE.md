@@ -29,3 +29,23 @@ A **Deep Research framework**: it decomposes a research question (super-topic) i
 - **Human-in-the-loop via LangGraph `interrupt()`** — used for brief approval and the evaluation/refinement loop; keep these as graph interrupts, not ad-hoc input prompts.
 - **Local state lives in `.deepresearch/`** — LangGraph checkpointer + Chroma store; keep it git-ignored.
 - **Config & secrets** — the Ollama base URL is configurable (remote server); the Tavily API key comes from the environment, never hard-coded.
+
+## Implementation rules
+
+### Testing
+
+- **Run via uv** — `uv run pytest`; a single test with `uv run pytest path::test`.
+- **Hermetic suite** — no real network, Ollama, Tavily, or marker calls in tests. Use the per-subsystem seams (each is built to be faked); unit-test subsystems with fakes, integration-test the graph with an in-memory checkpointer and a stubbed LLM. Tests must be deterministic.
+- **Test the invariants, not just happy paths** — fail-loud verification (unresolved/ungrounded claims block finalize), idempotent upsert (re-ingesting a source adds no duplicate chunks), slug stability across rewording, relevance-cache key isolation `(super, sub, source)`, dedup by source id.
+- **Change ships with its tests** — add/adjust tests in the same change; every bug fix gets a regression test.
+
+### Review
+
+- **Docs are the source of truth** — if a change diverges from [DesignBrief.md](docs/DesignBrief.md), [Architecture.md](docs/Architecture.md), or [CONTEXT.md](CONTEXT.md), update the doc in the same PR. Don't let code and docs drift.
+- **Keep PRs focused and reviewable** — one concern per PR; green tests and lint before requesting review.
+
+### Git workflow
+
+- **Branch off `main`** — never commit directly to `main`/`master`; work on a feature branch and open a PR (via `gh`).
+- **Commit/push only when asked**; small, focused commits with imperative subject lines.
+- **Pre-commit gate** — `uv run pytest` and lint/format (`ruff`) pass before committing.
