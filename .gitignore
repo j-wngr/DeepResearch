@@ -1,0 +1,18 @@
+# Local run state (LangGraph checkpointer + Chroma + caches)
+.deepresearch/
+
+# Scratch
+next-task.txt
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Env
+.env
