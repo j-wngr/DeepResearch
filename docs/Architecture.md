@@ -239,6 +239,8 @@ Long multi-round runs and full-document gating make the token budget a first-ord
 
 ## 13. Build order (milestones)
 
+The phased, test-gated expansion of this build order — with per-phase bringup steps, exit criteria, and the end-to-end integration suite — lives in [ImplementationPlan.md](ImplementationPlan.md).
+
 1. **Skeleton** — `uv` project, `config`, `paths`, `models`, slug derivation; CLI stub.
 2. **RAG core** — `embeddings`, `store`, `index` (ingest + reconcile), `retrieve`; verify against a hand-seeded pool.
 3. **Sources** — `pool`, `web` (Tavily), `pdf` (httpx + marker), `inbox`; no blocked-fetch UX yet.

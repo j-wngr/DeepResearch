@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Intent
 
-A **Deep Research framework**: it decomposes a research question (super-topic) into sub-topics, gathers and cites web/local sources per sub-topic, and synthesizes the findings into one unified research report. See [docs/DesignBrief.md](docs/DesignBrief.md) for the design (what/why), [docs/Architecture.md](docs/Architecture.md) for the implementation architecture (how), and [CONTEXT.md](CONTEXT.md) for the domain glossary.
+A **Deep Research framework**: it decomposes a research question (super-topic) into sub-topics, gathers and cites web/local sources per sub-topic, and synthesizes the findings into one unified research report. See [docs/DesignBrief.md](docs/DesignBrief.md) for the design (what/why), [docs/Architecture.md](docs/Architecture.md) for the implementation architecture (how), [docs/ImplementationPlan.md](docs/ImplementationPlan.md) for the phased, test-gated bringup plan, and [CONTEXT.md](CONTEXT.md) for the domain glossary.
 
 ## Tech stack
 
@@ -46,6 +46,5 @@ A **Deep Research framework**: it decomposes a research question (super-topic) i
 
 ### Git workflow
 
-- **Branch off `main`** — never commit directly to `main`/`master`; work on a feature branch and open a PR (via `gh`).
 - **Commit/push only when asked**; small, focused commits with imperative subject lines.
 - **Pre-commit gate** — `uv run pytest` and lint/format (`ruff`) pass before committing.
