@@ -87,6 +87,40 @@ class SourceRef(BaseModel):
         return self
 
 
+class AcquisitionRequest(BaseModel):
+    """Manual acquisition request for a blocked PDF."""
+
+    url: str
+    title: str
+    source_id: str
+    save_path: str
+    reason: str = "paywall/login wall"
+
+
+class AcquisitionResponse(BaseModel):
+    """User response to a blocked-PDF acquisition request."""
+
+    source_id: str
+    kind: Literal["saved", "unobtainable", "alternative"]
+    save_path: str | None = None
+    alternative_url: str | None = None
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_kind_payload(self) -> "AcquisitionResponse":
+        if self.kind == "saved" and self.save_path is None:
+            raise ValueError("save_path is required for saved acquisition responses")
+        if self.kind == "alternative" and self.alternative_url is None:
+            raise ValueError("alternative_url is required for alternative acquisition responses")
+        if self.kind == "unobtainable" and (
+            self.save_path is not None or self.alternative_url is not None
+        ):
+            raise ValueError(
+                "unobtainable acquisition responses must not include save_path or alternative_url"
+            )
+        return self
+
+
 class SubReport(BaseModel):
     """A per-sub-topic report."""
 

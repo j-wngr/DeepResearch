@@ -1,8 +1,18 @@
 """Typer CLI entry point."""
 
+import json
+
 import typer
 
 app = typer.Typer()
+
+
+@app.callback()
+def main(log_level: str = typer.Option("INFO", "--log-level", help="Logging level.")) -> None:
+    """Configure process-wide CLI behavior."""
+    from deepresearch.logging_setup import configure_logging
+
+    configure_logging(log_level)
 
 
 def _build_configurable(cfg):
@@ -59,6 +69,12 @@ def _display_interrupt(data):
         for st in brief.get("subtopics", []):
             typer.echo(f"  - {st.get('title', '')}: {st.get('scope', '')}")
         typer.echo("\nApprove, or provide feedback to revise.")
+    elif interrupt_type == "acquire":
+        requests = data.get("requests", [])
+        typer.echo(f"{len(requests)} blocked source(s) need a manual download:")
+        for idx, request in enumerate(requests, start=1):
+            typer.echo(f"  [{idx}] {request.get('title', '')}  {request.get('url', '')}")
+            typer.echo(f"      save as: {request.get('save_path', '')}")
     else:
         typer.echo(str(data))
 
@@ -68,6 +84,9 @@ def _collect_resume_input(current_state):
     interrupts = current_state.interrupts if hasattr(current_state, "interrupts") else []
     for interrupt_data in interrupts:
         _display_interrupt(interrupt_data.value)
+    if interrupts and interrupts[0].value.get("type") == "acquire":
+        response = typer.prompt("\nJSON acquisition responses")
+        return json.loads(response)
     return typer.prompt("\nYour response")
 
 
@@ -85,7 +104,10 @@ def _run_interactive(graph, input_state, config):
             return result
         for interrupt_data in interrupts:
             _display_interrupt(interrupt_data.value)
-        user_input = typer.prompt("\nYour response")
+        if interrupts and interrupts[0].value.get("type") == "acquire":
+            user_input = json.loads(typer.prompt("\nJSON acquisition responses"))
+        else:
+            user_input = typer.prompt("\nYour response")
         current_input = Command(resume=user_input)
 
 
@@ -181,13 +203,42 @@ def sync() -> None:
 @app.command(name="list")
 def list_runs() -> None:
     """List research runs."""
-    typer.echo("list (not yet implemented)")
+    from deepresearch.config import get_config
+    from deepresearch.run_state import load_runs
+
+    cfg = get_config()
+    runs = load_runs(cfg.state_dir, cfg.output_dir)
+    if not runs:
+        typer.echo("No runs found.")
+        return
+    for run in runs:
+        typer.echo(
+            f"{run.slug}  {run.question}  round={run.round}  auto_round={run.auto_round}  "
+            f"brief={'yes' if run.has_brief else 'no'}  "
+            f"report={'yes' if run.has_report else 'no'}  "
+            f"pending_handoff={'yes' if run.pending_handoff else 'no'}"
+        )
 
 
 @app.command()
 def status(slug: str) -> None:
     """Show status of a research run."""
-    typer.echo(f"status: {slug} (not yet implemented)")
+    from deepresearch.config import get_config
+    from deepresearch.run_state import load_run
+
+    cfg = get_config()
+    summary = load_run(cfg.state_dir, cfg.output_dir, slug)
+    if summary is None:
+        typer.echo(f"No run found for slug: {slug}")
+        raise typer.Exit(1)
+    for key, value in summary.model_dump().items():
+        typer.echo(f"{key}: {value}")
+    if summary.has_report:
+        report_path = cfg.output_dir / summary.slug / "report.md"
+        typer.echo("\nPreview:")
+        lines = report_path.read_text(encoding="utf-8").splitlines()[:20]
+        for line in lines:
+            typer.echo(line)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,8 @@ def supervisor(state: ResearchState) -> list[Send]:
             "evidence": [],
             "draft": None,
             "candidates": [],
+            "pending_acquisitions": [],
+            "acquisition_gaps": [],
             "subreport": None,
             "subreports": {},
             "quality_gate_result": None,

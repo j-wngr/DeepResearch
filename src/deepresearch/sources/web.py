@@ -2,6 +2,25 @@
 
 from deepresearch.config import get_config
 from deepresearch.models import SearchHit
+from deepresearch.retry import TavilyRateLimitError, retry_call
+
+
+def _transient_tavily_call(fn):
+    cfg = get_config()
+
+    def _call():
+        try:
+            return fn()
+        except (ConnectionError, TimeoutError) as exc:
+            raise TavilyRateLimitError(str(exc)) from exc
+
+    return retry_call(
+        _call,
+        max_attempts=cfg.tavily_max_retries,
+        initial_interval=0.5,
+        backoff_factor=2.0,
+        max_interval=4.0,
+    )
 
 
 def search(query: str, tavily_client=None) -> list[SearchHit]:
@@ -18,7 +37,7 @@ def search(query: str, tavily_client=None) -> list[SearchHit]:
         cfg = get_config()
         client = TavilyClient(api_key=cfg.tavily_api_key)
 
-    raw = client.search(query)
+    raw = _transient_tavily_call(lambda: client.search(query))
     results = raw.get("results", raw) if isinstance(raw, dict) else raw
 
     hits: list[SearchHit] = []
@@ -53,7 +72,7 @@ def extract(url: str, tavily_client=None) -> str:
         cfg = get_config()
         client = TavilyClient(api_key=cfg.tavily_api_key)
 
-    raw = client.extract(url)
+    raw = _transient_tavily_call(lambda: client.extract(url))
     if isinstance(raw, str):
         return raw
     if isinstance(raw, dict):

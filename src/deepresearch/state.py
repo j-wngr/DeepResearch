@@ -3,6 +3,7 @@
 from typing import Annotated, Literal, TypedDict
 
 from deepresearch.models import (
+    AcquisitionRequest,
     Brief,
     CoverageReport,
     EvidenceExtract,
@@ -78,6 +79,9 @@ class SubAgentState(TypedDict):
     evidence: list[EvidenceExtract]
     draft: str | None
     candidates: list[SourceRef]
+    pending_acquisitions: list[AcquisitionRequest]
+    acquisition_gaps: list[str]
     subreport: SubReport | None
     subreports: dict[str, SubReport]
     quality_gate_result: QualityGateResult | None
+    isolated: bool
