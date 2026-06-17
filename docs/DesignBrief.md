@@ -30,7 +30,7 @@ The system is built on **LangGraph** (on top of LangChain). LangGraph provides t
 
 ### Top-level graph
 
-1. `generate_brief` — breaks the super-topic into sub-topics, then `interrupt`s for the user to approve/edit the brief.
+1. `generate_brief` (implemented as `clarify` → `decompose` → `approve` nodes) — breaks the super-topic into sub-topics, then `interrupt`s for the user to approve/edit the brief.
 2. `supervisor` — fans out via the `Send` API, dispatching one `research_subagent` per sub-topic.
 3. `research_subagent` (subgraph) — see below.
 4. `gather` — collects the per-sub-topic reports (state reducer).
@@ -72,7 +72,7 @@ A **blocked PDF fetch is not a failure** in this sense: rather than isolate the 
 
 ## Brief generation
 
-The `generate_brief` node is the single interactive entry point. It turns a raw research question into an approved, structured brief that drives the rest of the graph.
+The `generate_brief` step (split into `clarify` → `decompose` → `approve` nodes) is the single interactive entry point. It turns a raw research question into an approved, structured brief that drives the rest of the graph.
 
 ### Flow
 
@@ -170,7 +170,7 @@ A validation pass enforces the brief's hard rule, in two stages:
 - **Synthesis, not concatenation** — the writer reconciles overlaps and contradictions across sub-topics into one coherent narrative.
 - **Structure** — title → executive summary → per-sub-topic sections → conclusion → unified References.
 - **Location** — in the configurable outputs tree: final report at `research/<super-topic-slug>/report.md`; per-sub-topic reports at `research/<super-topic-slug>/<sub-topic-slug>/report.md`. The Bibliography holds only sources, never reports.
-- **Who writes what** — each subagent writes its own per-sub-topic `report.md` on emit; the writer persists the unified `report.md` plus `references.json` (the deduped source-id list); `generate_brief` persists `brief.md`.
+- **Who writes what** — each subagent writes its own per-sub-topic `report.md` on emit; the writer persists the unified `report.md` plus `references.json` (the deduped source-id list); the brief-generation step (`clarify`/`decompose`/`approve` nodes) persists `brief.md`.
 
 ## Evaluation & refinement loop
 

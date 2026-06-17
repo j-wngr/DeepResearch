@@ -11,20 +11,27 @@ Terminology is from [CONTEXT.md](../CONTEXT.md); contracts and models are from [
 - **Invariant-driven tests.** Each phase explicitly tests the invariants it introduces (see the per-phase "Tests" and the [invariant matrix](#invariant-test-matrix)).
 - **Vertical slice early.** By Phase 6 a question runs end-to-end (single pass); Phases 7–9 add the loop, acquisition UX, and hardening.
 
-## Phase map
+## Phase map & status
 
-| Phase | Focus | Arch milestone |
-| --- | --- | --- |
-| 0 | Skeleton, config, models, state, **test harness + fakes** | 1 |
-| 1 | RAG core (embeddings, store, index, retrieve) | 2 |
-| 2 | Sources (pool, web, pdf, inbox) | 3 |
-| 3 | Relevance gate + verdict cache | (part of 4) |
-| 4 | Subagent subgraph (single sub-topic, no fan-out) | 4 |
-| 5 | Orchestration (brief, supervisor fan-out, gather, checkpointer) | 5 |
-| 6 | Writer + verification → first full single-pass run | 6 |
-| 7 | Refinement loop (evaluate, two tiers, two-mode re-run) | 7 |
-| 8 | Acquisition UX (blocked-fetch interrupt, inbox round-trip) | 8 |
-| 9 | Hardening + **full end-to-end integration suite** | 9 |
+| Phase | Focus | Arch milestone | Status |
+| --- | --- | --- | --- |
+| 0 | Skeleton, config, models, state, **test harness + fakes** | 1 | shipped |
+| 1 | RAG core (embeddings, store, index, retrieve) | 2 | shipped |
+| 2 | Sources (pool, web, pdf, inbox) | 3 | shipped (acquisition UX in Phase 8) |
+| 3 | Relevance gate + verdict cache | (part of 4) | shipped |
+| 4 | Subagent subgraph (single sub-topic, no fan-out) | 4 | shipped |
+| 5 | Orchestration (brief, supervisor fan-out, gather, checkpointer) | 5 | shipped |
+| 6 | Writer + verification → first full single-pass run | 6 | shipped |
+| 7 | Refinement loop (evaluate, two tiers, two-mode re-run) | 7 | planned |
+| 8 | Acquisition UX (blocked-fetch interrupt, inbox round-trip) | 8 | planned |
+| 9 | Hardening + **full end-to-end integration suite** | 9 | planned |
+
+Status values:
+
+- **shipped** — modules are in the tree, unit + integration tests are green, and the phase's exit criteria pass. The pre-commit gate (`uv run pytest` + `uv run ruff check .` + `uv run ruff format --check .`) enforces this.
+- **planned** — fully specified in this document and in [Architecture.md](Architecture.md), not yet in the tree.
+
+This table is the source of truth for what has landed. It is updated as part of the same change that ships a phase. After a phase lands, also update the "Definition of done" entry that follows once its tests are first green in CI.
 
 Dependencies are mostly linear; Phases 1 and 2 can proceed in parallel after Phase 0.
 

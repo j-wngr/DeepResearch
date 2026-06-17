@@ -30,8 +30,10 @@ Guiding invariants (see DesignBrief for rationale):
 
 | Node | Type | Responsibility | Out-edges |
 | --- | --- | --- | --- |
-| `generate_brief` | node (+interrupts) | clarify → decompose → approve; persist `brief.md` (slug already set at run start) | → `supervisor` |
-| `supervisor` | node | fan out one `research_subagent` per in-scope sub-topic via `Send` | → `research_subagent` (×N) |
+| `clarify` | node (+interrupt) | ask clarifying questions; refine the question on resume | → `decompose` |
+| `decompose` | node | decompose the (possibly refined) question into sub-topics; build the `Brief` | → `approve` |
+| `approve` | node (+interrupt) | present the brief for user approval; regenerate on feedback; persist `brief.md` on approval | → `supervisor` (via conditional edge) |
+| `supervisor` | **conditional routing function** (not a separate node in LangGraph) | fan out one `research_subagent` per in-scope sub-topic by returning `Send`s | → `research_subagent` (×N) |
 | `research_subagent` | subgraph | per-sub-topic ReAct loop (§3.2); writes its per-sub `report.md` | → `gather` |
 | `gather` | join node | fan-in barrier the subagents return to; merge is done by the `subreports` channel reducer | → `writer` |
 | `writer` | node | synthesize unified report; merge/renumber citations; run verification; persist `report.md` + `references.json` | → `evaluate` |
@@ -72,8 +74,14 @@ class ResearchState(TypedDict):
     pending_handoff: bool              # set before the pre-hand-off full re-run (#4)
     subreports: Annotated[dict[str, SubReport], merge_subreports]  # keyed by subtopic_slug
     report: str | None                 # current unified report.md body
+    report_references: list[SourceRef] # references used in the current report body
     coverage: CoverageReport | None    # latest evaluator output
     history: Annotated[list[RoundRecord], add]  # per-round coverage for plateau detection
+    # Verification state (fail-loud, resolved inside the writer step)
+    verify_ok: bool                    # did the latest verification pass?
+    verify_attempts: int               # bounded revision attempts consumed
+    verify_unsupported: list           # claims that failed groundedness (post-loop)
+    verify_dangling: list              # citation numbers that failed resolution
 ```
 
 `merge_subreports` **upserts by `subtopic_slug` (latest wins)** so re-runs replace, never duplicate; sub-topics dropped from the brief are pruned explicitly. State therefore holds exactly one current report per live sub-topic.
@@ -89,7 +97,10 @@ class SubAgentState(TypedDict):
     whitelisted: list[SourceRef]       # references only (full bodies stay on disk)
     evidence: list[EvidenceExtract]    # compress: distilled, sub-topic-relevant quotes
     draft: str | None
-    gate: Verdict | None               # GateResult is an alias of Verdict
+    candidates: list[SourceRef]        # transient: raw body refs dropped after gate (trajectory compaction)
+    subreport: SubReport | None        # emitted on quality-gate pass or cap-hit (with shortfall)
+    quality_gate_result: QualityGateResult | None  # latest quality-gate verdict; drives loop/END
+    subreports: dict[str, SubReport]   # pass-through channel for the parent state's subreports
 ```
 
 Note the deliberate **state-schema isolation** (§10): full document bodies never live in this state — only `SourceRef`s and distilled `EvidenceExtract`s do. The full markdown is loaded from the pool on demand (gate, final verification) and discarded.
@@ -105,6 +116,7 @@ Note the deliberate **state-schema isolation** (§10): full document bodies neve
 - `Verdict { super_slug, sub_slug, source_id, relevant: bool, reason, evidence: EvidenceExtract | None }` — relevance-cache entry; carries the distilled evidence when `relevant`.
 - `CoverageReport { per_question: list[QuestionScore], gaps: list[str], followups: list[SubTopic], queued_additions: list[SubTopic] }`
 - `QuestionScore { subtopic_slug, question, status: Literal["answered","partial","unanswered"], supported: bool }`
+- `QualityGateResult { passed: bool, coverage_score: float, reason: str }` — subagent quality-gate pass/fail verdict; drives the loop/END routing.
 - `RoundRecord { round, mode, coverage_score: float, fully_covered: bool }` — one per round in `history`; the `coverage_score` series drives plateau detection.
 
 ## 5. Module layout (`src/deepresearch/`)
@@ -121,7 +133,7 @@ src/deepresearch/
   persistence.py    # checkpointer factory (SQLite now; pluggable)
   llm.py            # Ollama chat client; role -> model resolution
   nodes/
-    brief.py        # generate_brief: clarify, decompose, approve
+    brief.py        # clarify_node, decompose_node, approve_node (split brief generation)
     supervisor.py   # fan-out via Send; dirty-only (autonomous) or all (user_facing) by mode
     subagent.py     # research_subagent subgraph (plan..quality gate); writes its per-sub report.md
     gather.py       # fan-in join node (merge via the subreports channel reducer)
@@ -143,6 +155,8 @@ src/deepresearch/
 ```
 
 Dependency direction: `nodes/*` orchestrate and depend on subsystems (`rag/`, `sources/`, `gate`, `citations`, `verify`, `llm`); subsystems depend only on `models`, `config`, `paths`. No subsystem imports a node. `graph.py` wires nodes; `cli.py` drives `graph.py` + `persistence.py`.
+
+One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py`'s `reconcile()` via a deferred import, because the Architecture §6.1 contract requires inbox processing before indexing. This is the only subsystem→subsystem seam; it is kept as a deferred import to avoid a module-level circular dependency.
 
 ## 6. Subsystem contracts
 
@@ -183,7 +197,7 @@ Dependency direction: `nodes/*` orchestrate and depend on subsystems (`rag/`, `s
 .deepresearch/                 # run state (git-ignored)
   checkpoints.sqlite           # LangGraph checkpointer
   chroma/                      # global vector store
-  relevance_cache.*            # whitelist verdict cache
+  relevance_cache.json       # whitelist verdict cache
 
 Bibliography/                  # knowledge: sources only (bibliography_dir)
   _inbox/                      # user-dropped / manual downloads, pre-reconcile
@@ -205,10 +219,11 @@ research/                      # deliverables (output_dir)
 
 Layered: env vars > config file > defaults. Settings:
 
-- `ollama_base_url`, model tiers (`model_fast`, `model_long`, `model_writer`, `embed_model`).
+- `ollama_base_url`, optional separate `embed_base_url` (defaults to `ollama_base_url`).
+- Model tiers (`model_fast`, `model_long`, `model_writer`) and `embed_model`.
 - `tavily_api_key` — **from environment only**, never persisted.
 - Paths: `bibliography_dir` (default `./Bibliography`), `output_dir` (default `./research`), `state_dir` (default `./.deepresearch`).
-- Caps/knobs: `max_concurrency`, `subagent_max_iterations`, `auto_round_cap`, `max_rounds`, `subtopics_target` (3–7), `subtopics_ceiling` (12), `retrieval_k`, `similarity_floor`, `provenance_boost`, `doc_size_cap`.
+- Caps/knobs: `max_concurrency`, `subagent_max_iterations`, `auto_round_cap`, `max_rounds`, `subtopics_target` (3–7), `subtopics_ceiling` (12), `retrieval_k`, `similarity_floor`, `provenance_boost`, `doc_size_cap`, `writer_max_revisions`.
 
 Concrete numeric defaults are chosen at implementation time against the real Ollama host (DesignBrief defers them deliberately).
 
@@ -245,7 +260,7 @@ The phased, test-gated expansion of this build order — with per-phase bringup 
 2. **RAG core** — `embeddings`, `store`, `index` (ingest + reconcile), `retrieve`; verify against a hand-seeded pool.
 3. **Sources** — `pool`, `web` (Tavily), `pdf` (httpx + marker), `inbox`; no blocked-fetch UX yet.
 4. **Subagent** — subgraph with gate (emitting distilled evidence) + quality gate; scratchpad + trajectory compaction (§10); single sub-topic end-to-end (no fan-out).
-5. **Orchestration** — `generate_brief` (clarify/decompose/approve interrupts), `supervisor` fan-out, `gather`, checkpointer; multi-sub-topic run.
+5. **Orchestration** — `clarify`/`decompose`/`approve` nodes (split brief generation with per-stage interrupts), `supervisor` fan-out, `gather`, checkpointer; multi-sub-topic run.
 6. **Writer + verification** — synthesis, citation merge/renumber, fail-loud verify.
 7. **Refinement loop** — `evaluate`, two-tier autonomous/user routing, two-mode re-run, plateau/caps.
 8. **Acquisition UX** — blocked-fetch interrupt (batched), resume responses, inbox round-trip.
@@ -254,7 +269,9 @@ The phased, test-gated expansion of this build order — with per-phase bringup 
 ## 14. Deferred / open implementation details
 
 - Concrete numeric defaults for §8 knobs (tune on the host).
-- `references.json` schema specifics.
-- Whether the relevance cache and checkpointer share one SQLite file.
 - Optional `research list/status` ergonomics.
 - Re-run-all vs. cached-source reuse cost profiling (informs whether the two-mode split needs further tuning).
+
+*Resolved details now in code:*
+- `references.json` schema — a JSON list of `SourceRef` objects for the sources cited in the final report (written by `writer.py`).
+- Relevance cache/checkpointer storage — kept in separate files: `state_dir / checkpoints.sqlite` (LangGraph) and `state_dir / relevance_cache.json` (gate verdict cache).
