@@ -8,40 +8,66 @@ agent: orchestrator
 Implement phase "$1" of the Deep Research framework. Follow this workflow:
 
 ## 1. Read the phase spec
-Read the definition of "$1" from `docs/ImplementationPlan.md` — its goal, deliverables, bringup steps, and exit criteria.
+
+Read the definition of "$1" from `docs/ImplementationPlan.md` — its goal, deliverables, bringup steps, exit criteria, and tests.
 
 ## 2. Check for missing design decisions
+
 Read `docs/Architecture.md` and verify all design decisions needed for implementation are present.
-- IF NOT: Ask the user with the question tool. Provide a concrete recommendation for each missing piece.
+- IF NOT: Ask the user with the `question` tool. Provide a concrete recommendation for each missing piece.
 - IF YES: Proceed.
 
-## 3. Create a detailed implementation plan
-Create a unambiguous, step-by-step implementation plan that covers:
-- Which modules to create or modify (from `docs/Architecture.md §5` module layout)
-- What tests to write, including which invariants to test and which fakes to use
-- Any new models, state fields, or config knobs needed
-- Whether `docs/Architecture.md` or `docs/DesignBrief.md` needs updating
+## 3. Build the structured spec
 
-The plan must be concrete enough that the developer can execute it without guessing.
+Load the `deepresearch-phase-spec` skill and fill out the template. Every section must be filled (or marked N/A with a reason).
 
-## 4. Spawn the developer
-Spawn the `developer` subagent with the implementation plan. The developer will write code and tests, run `pytest` and `ruff`, and verify the work.
+If the spec flags **Architecture divergence** from `docs/Architecture.md` or `docs/DesignBrief.md`:
+- Ask the user for approval before proceeding. Canonical docs are not updated silently.
+- If the user approves the divergence, note it for the finalize step (step 7).
 
-## 5. Spawn the reviewer
-Once the developer completes, spawn the `reviewer` subagent. The reviewer will:
-- Check architecture compliance (§5 dependency direction, contracts)
-- Verify test coverage and hermetic test rules
-- Run `ruff` and `pytest`
-- Check docs consistency
-- Report blockers vs suggestions
+## 4. Self-check the spec
 
-## 6. Iterate on review findings
+Re-read the completed spec. Every file, function, and test must be concrete and traceable to a section in `docs/Architecture.md` or `docs/ImplementationPlan.md`. If anything is vague:
+- Re-read the relevant doc section and tighten the spec.
+- If still ambiguous, ask the user.
+
+Do not spawn the developer with a vague spec.
+
+## 5. Spawn the developer
+
+Spawn the `developer` subagent. Pass it:
+- The phase number
+- The exit criteria
+- The completed spec from step 3
+
+The developer writes code, tests, runs `uv run pytest` and `uv run ruff check .`, and reports back using its **completion report** format.
+
+## 6. Pre-handoff verification
+
+Before spawning the reviewer, run `uv run pytest` and `uv run ruff check .` yourself to sanity-check the developer's work.
+- If either fails, spawn the developer again with the specific failure to fix.
+- If both pass, proceed to the review.
+
+## 7. Spawn the reviewer
+
+Spawn the `reviewer` subagent. Pass it:
+- The phase number
+- The exit criteria
+- The list of files created/modified
+- Any architecture divergences flagged in the spec or completion report
+
+The reviewer reports back using its **verdict format**: APPROVED or BLOCKED, with categorized findings and file:line references.
+
+## 8. Iterate on review findings
+
 If the reviewer reports blockers:
-- Spawn the developer again with the specific findings to fix
-- Re-spawn the reviewer to verify the fixes
-- Repeat until the reviewer approves
+- Spawn the developer again with the specific blockers to fix
+- Re-verify and re-review
+- Repeat until the reviewer reports APPROVED
 
-## 7. Finalize
-Once the reviewer approves:
-- Update `docs/Architecture.md` and `docs/DesignBrief.md` if the user approves.
-- Report completion: which phase was implemented, what modules were created/modified, and a summary of the test results
+## 9. Finalize
+
+Once the reviewer reports APPROVED:
+- Confirm `docs/ImplementationPlan.md` phase status row is updated to "shipped" (the developer should have done this; verify it).
+- If architecture divergences were approved by the user earlier, update `docs/Architecture.md` (and `docs/DesignBrief.md` if needed) now.
+- Report completion: which phase was implemented, what modules were created/modified, and a summary of the test results.
