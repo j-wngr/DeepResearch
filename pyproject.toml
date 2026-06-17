@@ -1,0 +1,51 @@
+[project]
+name = "deepresearch"
+version = "0.1.0"
+description = "Deep Research framework"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain-core",
+    "langchain-ollama",
+    "chromadb",
+    "tavily-python",
+    "marker-pdf",
+    "httpx",
+    "pydantic>=2",
+    "python-dotenv",
+    "typer",
+    "pyyaml>=6.0.3",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+]
+
+[project.scripts]
+deepresearch = "deepresearch.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deepresearch"]
+
+[dependency-groups]
+dev = ["ruff", "pytest"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests (hermetic)",
+    "integration: Integration tests (hermetic, may use fakes + in-memory checkpointer)",
+    "e2e: End-to-end tests (hermetic, compiled graph with fakes)",
+    "live: Live tests (require real Ollama + Tavily, skipped unless DR_RUN_LIVE=1)",
+]
