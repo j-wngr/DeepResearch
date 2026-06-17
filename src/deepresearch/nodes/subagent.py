@@ -15,10 +15,16 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
+from deepresearch import acquisition
 from deepresearch.config import get_config
 from deepresearch.models import (
+    AcquisitionRequest,
+    AcquisitionResponse,
+    Blocked,
     Citation,
     EvidenceExtract,
     QualityGateResult,
@@ -50,7 +56,12 @@ def _plan_node(state: SubAgentState, config: RunnableConfig) -> dict:
     lines.append("Open questions: all guiding questions are currently open.")
 
     scratchpad = "\n".join(lines)
-    return {"scratchpad": scratchpad, "iteration": 0}
+    return {
+        "scratchpad": scratchpad,
+        "iteration": 0,
+        "pending_acquisitions": [],
+        "acquisition_gaps": [],
+    }
 
 
 def _build_queries(sub: SubTopic, scratchpad: str) -> list[str]:
@@ -84,6 +95,7 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
     pdf_client = configurable.get("pdf_client")
     bibliography_dir = Path(configurable["bibliography_dir"])
 
+    from deepresearch.rag import index as rag_index
     from deepresearch.rag import retrieve
     from deepresearch.sources import pool, web
 
@@ -93,6 +105,8 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
 
     candidates: list[SourceRef] = []
     seen_ids: set[str] = set()
+    pending_acquisitions: list[AcquisitionRequest] = list(state.get("pending_acquisitions", []))
+    pending_ids = {req.source_id for req in pending_acquisitions}
     retrieve_fn = configurable.get("retrieve_fn")
 
     queries = _build_queries(sub, state["scratchpad"])
@@ -125,14 +139,81 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
                 if source_id in seen_ids or source_id in whitelisted_ids:
                     continue
                 source_ref = _fetch_from_search_hit(
-                    hit, bibliography_dir, store, embeddings, tavily_client, pdf_client
+                    hit,
+                    bibliography_dir,
+                    store,
+                    embeddings,
+                    tavily_client,
+                    pdf_client,
                 )
+                if isinstance(source_ref, Blocked):
+                    request = acquisition.build_request(source_ref.url, hit.title, bibliography_dir)
+                    if request.source_id not in pending_ids:
+                        pending_acquisitions.append(request)
+                        pending_ids.add(request.source_id)
+                    continue
                 if source_ref is None:
                     continue
                 seen_ids.add(source_ref.id)
                 candidates.append(source_ref)
 
-    return {"candidates": candidates}
+    if pending_acquisitions:
+        resume_value = interrupt(
+            {
+                "type": "acquire",
+                "requests": [request.model_dump() for request in pending_acquisitions],
+            }
+        )
+        responses = _parse_acquisition_responses(resume_value)
+        requests_by_id = {request.source_id: request for request in pending_acquisitions}
+        gaps = list(state.get("acquisition_gaps", []))
+        saved_responses = [response for response in responses if response.kind == "saved"]
+        for response in saved_responses:
+            save_path = Path(response.save_path or "")
+            if not save_path.exists():
+                raise FileNotFoundError(f"acquired PDF not found at save_path: {save_path}")
+        if saved_responses:
+            # Reconcile-on-resume folds all user-dropped PDFs into the pool
+            # under their already-named ids before the subagent gates them.
+            rag_index.reconcile(bibliography_dir, store, embeddings, pdf_converter=pdf_client)
+        for response in responses:
+            request = requests_by_id.get(response.source_id)
+            if request is None:
+                continue
+            if response.kind == "saved":
+                source_ref = pool.get_ref(response.source_id, bibliography_dir)
+                gap = None
+            else:
+                source_ref, gap = acquisition.apply_response(
+                    response,
+                    original_url=request.url,
+                    original_title=request.title,
+                    bibliography_dir=bibliography_dir,
+                    chat_fn=configurable.get("chat_fn"),
+                    tavily_client=tavily_client,
+                    pdf_client=pdf_client,
+                    store=store,
+                    embeddings=embeddings,
+                )
+            if source_ref is not None and source_ref.id not in seen_ids:
+                candidates.append(source_ref)
+                seen_ids.add(source_ref.id)
+            if gap is not None:
+                gaps.append(gap)
+        return {"candidates": candidates, "pending_acquisitions": [], "acquisition_gaps": gaps}
+
+    return {"candidates": candidates, "pending_acquisitions": pending_acquisitions}
+
+
+def _parse_acquisition_responses(value) -> list[AcquisitionResponse]:
+    if isinstance(value, dict):
+        raw_values = value.values()
+    else:
+        raw_values = value or []
+    return [
+        item if isinstance(item, AcquisitionResponse) else AcquisitionResponse.model_validate(item)
+        for item in raw_values
+    ]
 
 
 def _source_id_from_hit(hit: SearchHit) -> str:
@@ -149,7 +230,7 @@ def _fetch_from_search_hit(
     embeddings,
     tavily_client,
     pdf_client,
-) -> SourceRef | None:
+) -> SourceRef | Blocked | None:
     """Fetch/convert/save/ingest a single search hit, returning its SourceRef."""
     from deepresearch.rag import index as rag_index
     from deepresearch.sources import pdf as pdf_source
@@ -169,9 +250,7 @@ def _fetch_from_search_hit(
                 bibliography_dir,
             )
         else:
-            # Blocked PDFs are handled by acquisition interrupts in Phase 8.
-            logger.warning("Blocked PDF %s skipped in Phase 4", hit.url)
-            return None
+            return fetch_result
     else:
         markdown = web.extract(hit.url, tavily_client)
         source_ref = pool.save_web(markdown, hit.url, hit.title, bibliography_dir)
@@ -317,6 +396,7 @@ def _quality_gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
 
     response = chat_fn("synth", [{"role": "user", "content": prompt}])
     result = _parse_quality_gate_response(response)
+    gaps = list(state.get("acquisition_gaps", []))
 
     updates: dict[str, Any] = {"quality_gate_result": result}
 
@@ -332,23 +412,58 @@ def _quality_gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
         # Also emit to parent's subreports channel (keyed by subtopic slug)
         # so the merge_subreports reducer accumulates results from all subagents.
         updates["subreports"] = {sub.slug: subreport}
+    elif gaps and not state.get("candidates"):
+        shortfall = _shortfall_with_gaps(result.reason, gaps)
+        body = _append_gap_paragraph(draft, gaps)
+        subreport = SubReport(
+            subtopic_slug=sub.slug,
+            body=body,
+            citations=_build_citations(state["evidence"], state["whitelisted"]),
+            shortfall=shortfall,
+        )
+        _write_sub_report(subreport, output_dir, state["slug"])
+        updates["subreport"] = subreport
+        updates["subreports"] = {sub.slug: subreport}
     elif state["iteration"] < cfg.subagent_max_iterations:
         # Increment the iteration counter so the next acquire cycle is tracked.
         updates["iteration"] = state["iteration"] + 1
     else:
         # Iteration cap reached while the draft still fails the quality gate.
         # Emit the best effort with the shortfall recorded.
+        shortfall = _shortfall_with_gaps(result.reason, gaps) if gaps else result.reason
+        body = _append_gap_paragraph(draft, gaps) if gaps else draft
         subreport = SubReport(
             subtopic_slug=sub.slug,
-            body=draft,
+            body=body,
             citations=_build_citations(state["evidence"], state["whitelisted"]),
-            shortfall=result.reason,
+            shortfall=shortfall,
         )
         _write_sub_report(subreport, output_dir, state["slug"])
         updates["subreport"] = subreport
         updates["subreports"] = {sub.slug: subreport}
 
     return updates
+
+
+def _shortfall_with_gaps(reason: str, gaps: list[str]) -> str:
+    if not gaps:
+        return reason
+    if not reason:
+        return acquisition.format_gaps(gaps)
+    return f"{reason} | {acquisition.format_gaps(gaps)}"
+
+
+def _append_gap_paragraph(body: str, gaps: list[str]) -> str:
+    if not gaps:
+        return body
+    lines = [body.rstrip(), "", "Acquisition gaps:"]
+    for gap in gaps:
+        url = gap.removeprefix("source unobtainable: ")
+        if gap.startswith("source unobtainable: "):
+            lines.append(f"Could not obtain: {url}")
+        else:
+            lines.append(f"Could not obtain: {gap}")
+    return "\n".join(lines).strip() + "\n"
 
 
 def _parse_quality_gate_response(response: str) -> QualityGateResult:
@@ -390,6 +505,37 @@ def _write_sub_report(subreport: SubReport, output_dir: Path, slug: str) -> None
     report_path.write_text(subreport.body, encoding="utf-8")
 
 
+def _build_isolated_state(state: SubAgentState, exc: Exception, config: RunnableConfig) -> dict:
+    """Build an isolated SubReport after a hard subagent failure."""
+    output_dir = Path(config.get("configurable", {}).get("output_dir", get_config().output_dir))
+    sub = state["subtopic"]
+    isolated_sub = sub.model_copy(update={"status": "isolated"})
+    shortfall = f"subagent isolated: {type(exc).__name__}: {exc}"
+    body = (
+        f"## {sub.title}\n\n"
+        f"Could not obtain: this sub-topic was isolated after an internal failure.\n\n"
+        f"isolated: {type(exc).__name__}: {exc}\n"
+    )
+    subreport = SubReport(
+        subtopic_slug=sub.slug,
+        body=body,
+        citations=[],
+        shortfall=shortfall,
+    )
+    _write_sub_report(subreport, output_dir, state["slug"])
+    logger.exception(
+        "subagent isolated", extra={"run_slug": state["slug"], "subtopic_slug": sub.slug}
+    )
+    return {
+        "subtopic": isolated_sub,
+        "subreport": subreport,
+        "subreports": {sub.slug: subreport},
+        "acquisition_gaps": [],
+        "pending_acquisitions": [],
+        "isolated": True,
+    }
+
+
 def _route_after_quality_gate(state: SubAgentState) -> str:
     """Return the next node: 'end' or 'loop' back to acquire."""
     cfg = get_config()
@@ -401,13 +547,17 @@ def _route_after_quality_gate(state: SubAgentState) -> str:
     # A failing gate either increments iteration to loop (no subreport yet) or
     # emits a shortfall SubReport when the cap is hit.  Loop only when no report
     # has been emitted and the cap has not been reached.
-    if state.get("subreport") is None and state["iteration"] <= cfg.subagent_max_iterations:
+    if (
+        state.get("subreport") is None
+        and not state.get("acquisition_gaps")
+        and state["iteration"] <= cfg.subagent_max_iterations
+    ):
         return "loop"
     return "end"
 
 
-def build_subagent_subgraph():
-    """Build and compile the subagent subgraph for one sub-topic."""
+def _build_inner_subagent_subgraph(checkpointer=None):
+    """Build and compile the unsafe inner subagent subgraph."""
     builder = StateGraph(SubAgentState)
 
     builder.add_node("plan", _plan_node)
@@ -429,4 +579,26 @@ def build_subagent_subgraph():
         {"loop": "acquire", "end": END},
     )
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
+
+
+def build_subagent_subgraph(checkpointer=None):
+    """Build the subagent subgraph wrapped with failure isolation."""
+    compiled = _build_inner_subagent_subgraph(checkpointer=checkpointer)
+
+    def _isolating_subagent(state: SubAgentState, config: RunnableConfig) -> dict:
+        try:
+            result = compiled.invoke(state, config)
+            if isinstance(result, dict):
+                result.setdefault("isolated", False)
+            return result
+        except GraphInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 - isolation boundary catches all hard failures.
+            return _build_isolated_state(state, exc, config)
+
+    builder = StateGraph(SubAgentState)
+    builder.add_node("research_subagent", _isolating_subagent)
+    builder.add_edge(START, "research_subagent")
+    builder.add_edge("research_subagent", END)
+    return builder.compile(checkpointer=checkpointer)

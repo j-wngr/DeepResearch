@@ -30,7 +30,8 @@ class Config:
         self.output_dir = self._get_path("OUTPUT_DIR", "./research")
         self.state_dir = self._get_path("STATE_DIR", "./.deepresearch")
         self.max_concurrency = self._get_int("MAX_CONCURRENCY", 2)
-        self.subagent_max_iterations = self._get_int("SUBAGENT_MAX_ITERATIONS", 5)
+        # Phase 9 tuning: keep subagent loops bounded while allowing one retry pass.
+        self.subagent_max_iterations = self._get_int("SUBAGENT_MAX_ITERATIONS", 3)
         self.auto_round_cap = self._get_int("AUTO_ROUND_CAP", 2)
         self.max_rounds = self._get_int("MAX_ROUNDS", 5)
         self.subtopics_target = self._get_int("SUBTOPICS_TARGET", 5)
@@ -40,6 +41,10 @@ class Config:
         self.provenance_boost = self._get_float("PROVENANCE_BOOST", 0.05)
         self.doc_size_cap = self._get_int("DOC_SIZE_CAP", 50000)
         self.writer_max_revisions = self._get_int("WRITER_MAX_REVISIONS", 3)
+        # Bounded transient dependency retries: 3 attempts, 0.5s initial, 2x backoff.
+        self.llm_max_retries = self._get_int("LLM_MAX_RETRIES", 3)
+        self.llm_retry_initial_interval = self._get_float("LLM_RETRY_INITIAL_INTERVAL", 0.5)
+        self.tavily_max_retries = self._get_int("TAVILY_MAX_RETRIES", 3)
 
     @classmethod
     def get(cls) -> "Config":
