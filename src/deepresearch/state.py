@@ -64,6 +64,7 @@ class ResearchState(TypedDict):
     verify_dangling: list
     coverage: CoverageReport | None
     history: Annotated[list[RoundRecord], add]
+    user_approved: bool
 
 
 class SubAgentState(TypedDict):

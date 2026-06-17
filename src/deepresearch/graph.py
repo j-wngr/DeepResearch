@@ -3,6 +3,8 @@
 from langgraph.graph import END, START, StateGraph
 
 from deepresearch.nodes.brief import approve_node, clarify_node, decompose_node
+from deepresearch.nodes.evaluate import _route as _route_evaluate
+from deepresearch.nodes.evaluate import evaluate_node
 from deepresearch.nodes.gather import gather
 from deepresearch.nodes.subagent import build_subagent_subgraph
 from deepresearch.nodes.supervisor import supervisor
@@ -28,6 +30,7 @@ def build_graph(checkpointer=None):
     builder.add_node("research_subagent", build_subagent_subgraph())
     builder.add_node("gather", gather)
     builder.add_node("writer", writer)
+    builder.add_node("evaluate", evaluate_node)
 
     builder.add_edge(START, "clarify")
     builder.add_edge("clarify", "decompose")
@@ -39,6 +42,18 @@ def build_graph(checkpointer=None):
     )
     builder.add_edge("research_subagent", "gather")
     builder.add_edge("gather", "writer")
-    builder.add_edge("writer", END)
+    builder.add_edge("writer", "evaluate")
+    builder.add_conditional_edges(
+        "evaluate",
+        _route_after_evaluate,
+        {"research_subagent": "research_subagent", "end": END},
+    )
 
     return builder.compile(checkpointer=checkpointer)
+
+
+def _route_after_evaluate(state: ResearchState):
+    """Route to END after user approval, otherwise fan out subagents."""
+    if _route_evaluate(state) == "end":
+        return "end"
+    return supervisor(state)

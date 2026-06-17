@@ -1,6 +1,7 @@
 """LangGraph nodes."""
 
 from deepresearch.nodes.brief import approve_node, clarify_node, decompose_node
+from deepresearch.nodes.evaluate import evaluate_node
 from deepresearch.nodes.gather import gather
 from deepresearch.nodes.subagent import build_subagent_subgraph
 from deepresearch.nodes.supervisor import supervisor
@@ -14,4 +15,5 @@ __all__ = [
     "gather",
     "build_subagent_subgraph",
     "writer",
+    "evaluate_node",
 ]
