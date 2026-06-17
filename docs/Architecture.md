@@ -77,6 +77,7 @@ class ResearchState(TypedDict):
     report_references: list[SourceRef] # references used in the current report body
     coverage: CoverageReport | None    # latest evaluator output
     history: Annotated[list[RoundRecord], add]  # per-round coverage for plateau detection
+    user_approved: bool                 # evaluator sets true after explicit hand-off approval; routes to END
     # Verification state (fail-loud, resolved inside the writer step)
     verify_ok: bool                    # did the latest verification pass?
     verify_attempts: int               # bounded revision attempts consumed

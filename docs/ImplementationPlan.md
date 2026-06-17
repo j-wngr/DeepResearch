@@ -22,7 +22,7 @@ Terminology is from [CONTEXT.md](../CONTEXT.md); contracts and models are from [
 | 4 | Subagent subgraph (single sub-topic, no fan-out) | 4 | shipped |
 | 5 | Orchestration (brief, supervisor fan-out, gather, checkpointer) | 5 | shipped |
 | 6 | Writer + verification → first full single-pass run | 6 | shipped |
-| 7 | Refinement loop (evaluate, two tiers, two-mode re-run) | 7 | planned |
+| 7 | Refinement loop (evaluate, two tiers, two-mode re-run) | 7 | shipped |
 | 8 | Acquisition UX (blocked-fetch interrupt, inbox round-trip) | 8 | planned |
 | 9 | Hardening + **full end-to-end integration suite** | 9 | planned |
 
@@ -185,7 +185,7 @@ Dependencies are mostly linear; Phases 1 and 2 can proceed in parallel after Pha
 
 ---
 
-## Phase 7 — Refinement loop
+## Phase 7 — Refinement loop *(shipped)*
 
 **Goal.** The two-tier evaluate loop with two-mode re-run, plateau detection, and bounded termination.
 
