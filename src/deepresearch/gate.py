@@ -15,6 +15,7 @@ from pathlib import Path
 
 from deepresearch.config import get_config
 from deepresearch.llm import chat as real_chat
+from deepresearch.llm import extract_json
 from deepresearch.models import EvidenceExtract, EvidencePoint, SourceRef, SubTopic, Verdict
 from deepresearch.sources.pool import get as pool_get
 
@@ -79,7 +80,7 @@ def _build_prompt(sub: SubTopic, markdown: str) -> str:
 
 def _parse_response(response: str, super_slug: str, sub_slug: str, source_id: str) -> Verdict:
     try:
-        data = json.loads(response)
+        data = json.loads(extract_json(response))
     except json.JSONDecodeError:
         logger.error("Failed to parse gate LLM response as JSON.")
         return Verdict(

@@ -73,12 +73,38 @@ def extract(url: str, tavily_client=None) -> str:
         client = TavilyClient(api_key=cfg.tavily_api_key)
 
     raw = _transient_tavily_call(lambda: client.extract(url))
+    return _content_from_extract(raw, url)
+
+
+def _content_from_extract(raw, url: str) -> str:
+    """Pull the extracted markdown out of a Tavily extract response.
+
+    The real Tavily extract API returns
+    ``{"results": [{"url": ..., "raw_content": ...}], "failed_results": [...]}``;
+    the content lives in the ``results`` list, not at the top level. Older or
+    alternate shapes (a bare string, a dict keyed by URL, or a dict with a
+    top-level ``content``/``raw_content``) are handled too so the parser is
+    robust across SDK versions and test doubles.
+    """
     if isinstance(raw, str):
         return raw
-    if isinstance(raw, dict):
-        # Tavily extract may return a dict keyed by URL or contain 'content'/'raw_content'.
-        if url in raw:
-            value = raw[url]
-            return value if isinstance(value, str) else value.get("content", "")
-        return raw.get("content", raw.get("raw_content", ""))
-    raise TypeError(f"Unexpected Tavily extract result type: {type(raw)}")
+    if not isinstance(raw, dict):
+        raise TypeError(f"Unexpected Tavily extract result type: {type(raw)}")
+
+    results = raw.get("results")
+    if isinstance(results, list) and results:
+        # Prefer the entry matching the requested URL; fall back to the first.
+        chosen = next(
+            (r for r in results if isinstance(r, dict) and r.get("url") == url),
+            None,
+        )
+        if chosen is None and isinstance(results[0], dict):
+            chosen = results[0]
+        if chosen is not None:
+            return chosen.get("raw_content") or chosen.get("content") or ""
+
+    # Dict keyed by URL, or a flat content payload.
+    if url in raw:
+        value = raw[url]
+        return value if isinstance(value, str) else value.get("content", "")
+    return raw.get("content") or raw.get("raw_content") or ""

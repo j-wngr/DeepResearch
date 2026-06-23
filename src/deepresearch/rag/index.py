@@ -136,13 +136,31 @@ def ingest(
     store: ChromaStore,
     embeddings,
     bibliography_dir: Path,
+    super_topic: str = "",
+    sub_topic: str = "",
 ) -> None:
-    """Chunk, embed, and index a source already stored in the pool."""
-    full_path = bibliography_dir / source_ref.source_path
-    text = full_path.read_text(encoding="utf-8")
+    """Chunk, embed, and index a source already stored in the pool.
+
+    ``super_topic``/``sub_topic`` tag the chunks with the run that discovered
+    them so future runs of the same super-topic get the provenance re-rank
+    boost (``rag.retrieve.candidates``). Reconcile leaves them empty because
+    pool-wide indexing has no single owning run.
+    """
+    from deepresearch.sources import pool
+
+    # Index the same frontmatter-stripped body the relevance gate grounds on.
+    # Indexing the raw file would embed the YAML frontmatter (title, URL, ...),
+    # so an empty-body source would still be retrievable as a "frontmatter
+    # chunk" yet rejected by the gate as an empty document -- and, worse, would
+    # suppress the web-search gap-fill that should refetch real content.
+    text = pool.get(source_ref.id, bibliography_dir)
 
     chunks = chunk_markdown(text, source_ref.id)
-    vectors = embeddings.embed([c["document"] for c in chunks])
+    if not chunks:
+        # Empty-body source (e.g. a failed extract): nothing to index. Returning
+        # early also avoids an empty upsert, which the vector store rejects.
+        return
+    vectors = embeddings.embed_documents([c["document"] for c in chunks])
 
     for chunk, vector in zip(chunks, vectors, strict=True):
         chunk["embedding"] = vector
@@ -154,8 +172,8 @@ def ingest(
             source_url=source_ref.url or "",
             title=source_ref.title,
             source_type=source_ref.type,
-            super_topic="",
-            sub_topic="",
+            super_topic=super_topic,
+            sub_topic=sub_topic,
         )
 
     store.upsert(chunks)
@@ -175,6 +193,7 @@ def reconcile(
     ``pdf_converter`` is passed through to inbox reconciliation and is used by
     tests to keep the suite hermetic.
     """
+    from deepresearch.sources import pool
     from deepresearch.sources.inbox import reconcile as inbox_reconcile
 
     inbox_reconcile(bibliography_dir, pdf_converter=pdf_converter)
@@ -191,9 +210,14 @@ def reconcile(
         if source_id in indexed:
             continue
 
-        text = md_file.read_text(encoding="utf-8")
+        # Strip frontmatter to match the gate's grounding (see ``ingest``).
+        text = pool.get(source_id, bibliography_dir)
         chunks = chunk_markdown(text, source_id)
-        vectors = embeddings.embed([c["document"] for c in chunks])
+        if not chunks:
+            # Empty-body source (e.g. a failed extract): skip rather than index
+            # a phantom that the gate would only reject.
+            continue
+        vectors = embeddings.embed_documents([c["document"] for c in chunks])
 
         for chunk, vector in zip(chunks, vectors, strict=True):
             chunk["embedding"] = vector

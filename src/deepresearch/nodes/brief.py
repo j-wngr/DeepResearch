@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from deepresearch.config import get_config
+from deepresearch.llm import extract_json
 from deepresearch.models import Brief, SubTopic
 from deepresearch.paths import output_path
 from deepresearch.paths import slug as make_slug
@@ -19,11 +20,12 @@ logger = logging.getLogger("deepresearch.nodes.brief")
 
 def _parse_json_response(response: str) -> dict | list:
     """Parse a JSON response, returning a safe default on failure."""
+    cleaned = extract_json(response)
     try:
-        return json.loads(response)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
         logger.warning("Failed to parse JSON response: %s", response)
-        return {} if response.strip().startswith("{") else []
+        return {} if cleaned.lstrip().startswith("{") else []
 
 
 def _build_brief_markdown(brief: Brief) -> str:

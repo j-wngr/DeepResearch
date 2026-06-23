@@ -35,16 +35,21 @@ def merge(
     for subreport in subreports:
         citations = list(subreport.citations)
 
-        def source_id_for(token: str) -> str:
+        def source_id_for(token: str) -> str | None:
             if token.isdecimal():
                 index = int(token)
                 if 1 <= index <= len(citations):
                     return citations[index - 1].source_id
+                return None
             return token
 
         def replace(match: re.Match[str]) -> str:
             token = match.group(1)
             source_id = source_id_for(token)
+            if source_id is None:
+                # Unmappable numeric citation: drop the marker so it never
+                # becomes a dangling reference in the final report.
+                return ""
             return f"[{number_for(source_id)}]"
 
         renumbered = _CITATION_RE.sub(replace, subreport.body)

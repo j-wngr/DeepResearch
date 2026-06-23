@@ -185,6 +185,28 @@ def test_web_extract_returns_markdown():
 
 
 @pytest.mark.unit
+def test_web_extract_parses_real_tavily_results_shape():
+    """The real Tavily extract API returns the content inside a ``results`` list,
+    not at the top level. Regression: the old parser fell through to "" for this
+    shape, so every fetched web source was saved with an empty body and the
+    relevance gate then rejected them all as "empty"."""
+
+    class ResultsShapeTavily:
+        def extract(self, url):
+            return {
+                "results": [
+                    {"url": url, "raw_content": "# Green Tea\n\nReal extracted body."}
+                ],
+                "failed_results": [],
+                "response_time": 0.5,
+            }
+
+    result = extract("http://ex.com/page", tavily_client=ResultsShapeTavily())
+
+    assert result == "# Green Tea\n\nReal extracted body."
+
+
+@pytest.mark.unit
 def test_pdf_fetch_returns_path(tmp_workspace):
     bib_dir = tmp_workspace["bibliography_dir"]
     fake_pdf = FakePdf(pdfs={"http://ex.com/paper.pdf": b"pdf bytes"})

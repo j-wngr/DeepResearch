@@ -220,7 +220,7 @@ research/                      # deliverables (output_dir)
 
 Layered: env vars > config file > defaults. Settings:
 
-- `ollama_base_url`, optional separate `embed_base_url` (defaults to `ollama_base_url`).
+- `ollama_base_url`, optional separate `embed_base_url` (defaults to `ollama_base_url`), and optional `ollama_api_key` for authenticated/cloud hosts.
 - Model tiers (`model_fast`, `model_long`, `model_writer`) and `embed_model`.
 - `tavily_api_key` — **from environment only**, never persisted.
 - Paths: `bibliography_dir` (default `./Bibliography`), `output_dir` (default `./research`), `state_dir` (default `./.deepresearch`).

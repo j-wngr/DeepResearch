@@ -205,7 +205,7 @@ writer → evaluate (report + sources ⇄ brief: coverage & support per guiding_
 - **Python** — implementation language.
 - **uv** — Python packaging, dependency, and environment management.
 - **LangGraph** (on LangChain) — agent orchestration, state, checkpointing, and fan-out.
-- **Ollama** — LLM backbone (chat + embeddings), served from a remote server (configurable base URL). Chat models are **role-tiered** (all configurable): a small/fast model for clarify & routing, a **large-context** model for the relevance gate and synthesis, and a strong model for the final writer and evaluator. Embeddings use `mxbai-embed-large` by default.
+- **Ollama** — LLM backbone (chat + embeddings), served from a remote server (configurable base URL; optional API key for authenticated/cloud hosts). Chat models are **role-tiered** (all configurable): a small/fast model for clarify & routing, a **large-context** model for the relevance gate and synthesis, and a strong model for the final writer and evaluator. Embeddings use `mxbai-embed-large` by default.
 - **Chroma** — embedded, persistent vector store for the RAG.
 - **Tavily** — web search and HTML→markdown extraction.
 - **httpx** — direct PDF downloads (paywalled/bot-walled fetches fall back to a manual-download interrupt).

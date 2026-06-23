@@ -113,7 +113,10 @@ def _run_subagent_with_subtopic(
     fake_pdf: FakePdf | None = None,
     retrieve_fn=None,
 ) -> dict:
+    from deepresearch.rag.store import ChromaStore
+
     subgraph = build_subagent_subgraph()
+    store = ChromaStore(state_dir, embeddings.embed_query)
     initial_state = {
         "slug": "test-super-slug",
         "subtopic": subtopic,
@@ -133,6 +136,7 @@ def _run_subagent_with_subtopic(
             "tavily_client": fake_tavily,
             "pdf_client": fake_pdf,
             "embeddings": embeddings,
+            "store": store,
             "bibliography_dir": str(bibliography_dir),
             "state_dir": str(state_dir),
             "output_dir": str(output_dir),
@@ -502,3 +506,138 @@ def test_per_sub_report_written_at_expected_path(tmp_workspace, monkeypatch):
     report_path = output_path(out_dir, "test-super-slug", "fasting-insulin", "report.md")
     assert report_path.exists()
     assert draft in report_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_web_gap_fill_when_rag_only_returns_irrelevant(tmp_workspace, monkeypatch):
+    """Regression: a pool holding only an off-topic source must not starve a
+    sub-topic. RAG keeps returning the irrelevant source (so the old
+    ``if not candidates`` web-search guard never fired); once the quality gate
+    loops, the subagent must supplement with a web search and whitelist the
+    relevant hit it finds."""
+    monkeypatch.setenv("SIMILARITY_FLOOR", "0.0")
+    reset_config()
+
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    out_dir = tmp_workspace["output_dir"]
+    embeddings = FakeEmbeddings()
+
+    # Pool holds one off-topic source that RAG returns for every query.
+    irrelevant_url = "https://example.com/off-topic"
+    _seed_source(bib_dir, irrelevant_url, "Off topic", "Solar panels and renewable energy.")
+    irrelevant_id = hash_url(irrelevant_url)
+
+    # The web search yields a relevant source.
+    web_url = "https://example.com/fasting"
+    web_content = "Intermittent fasting improves insulin sensitivity in trials."
+    web_id = hash_url(web_url)
+
+    fake_tavily = FakeTavily(
+        search_results={
+            "intermittent fasting": [
+                SearchHit(url=web_url, title="Fasting study", snippet="snippet")
+            ]
+        },
+        extracts={web_url: web_content},
+    )
+    draft = "Draft citing [" + web_id + "]."
+    fake_chat = FakeChat(
+        {
+            # iter 0: judge the irrelevant source (False). iter 1: the cached
+            # False is reused, then the web source is judged True.
+            "gate": [
+                _gate_response(False, irrelevant_id, "", ""),
+                _gate_response(True, web_id, "Fasting improves insulin sensitivity", web_content),
+            ],
+            "synth": [
+                "Reflect 1",
+                "Empty draft.",
+                _quality_gate_response(False, "no evidence"),
+                "Reflect 2",
+                draft,
+                _quality_gate_response(True),
+            ],
+        }
+    )
+
+    result = _run_subagent(
+        bib_dir,
+        state_dir,
+        out_dir,
+        embeddings,
+        fake_chat,
+        fake_tavily,
+        retrieve_fn=lambda query, slug: [irrelevant_id],
+    )
+
+    whitelisted_ids = {ref.id for ref in result["whitelisted"]}
+    assert web_id in whitelisted_ids
+    assert irrelevant_id not in whitelisted_ids
+    assert fake_tavily.search_count() > 0  # the gap-fill search actually ran
+
+
+@pytest.mark.integration
+def test_quality_gate_cannot_pass_without_evidence(tmp_workspace, monkeypatch):
+    """Fail loud: even if the scorer says 'pass', a draft with no distilled
+    evidence must not emit a clean sub-report -- it loops and then records a
+    shortfall with no citations."""
+    monkeypatch.setenv("SIMILARITY_FLOOR", "0.0")
+    monkeypatch.setenv("SUBAGENT_MAX_ITERATIONS", "1")
+    reset_config()
+
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    out_dir = tmp_workspace["output_dir"]
+    embeddings = FakeEmbeddings()
+
+    # Nothing in the pool and no web client -> nothing ever whitelisted.
+    fake_chat = FakeChat(
+        {
+            "synth": [
+                "Reflect 1",
+                "Draft with no citations.",
+                _quality_gate_response(True),  # scorer lies: claims pass
+                "Reflect 2",
+                "Draft with no citations.",
+                _quality_gate_response(True),
+            ],
+        }
+    )
+
+    result = _run_subagent(
+        bib_dir,
+        state_dir,
+        out_dir,
+        embeddings,
+        fake_chat,
+        retrieve_fn=lambda query, slug: [],
+    )
+
+    subreport = result["subreport"]
+    assert subreport is not None
+    assert subreport.shortfall  # not a clean pass
+    assert subreport.citations == []
+
+
+@pytest.mark.unit
+def test_fetch_skips_empty_web_extract(tmp_workspace):
+    """An empty extract must not be saved as a source: an empty-body entry gets
+    retrieved by RAG yet rejected by the gate, and it suppresses the gap-fill."""
+    from deepresearch.nodes.subagent import _fetch_from_search_hit
+    from deepresearch.rag.store import ChromaStore
+
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    embeddings = FakeEmbeddings()
+    store = ChromaStore(state_dir, embeddings.embed_query)
+
+    url = "http://ex.com/paywalled"
+    hit = SearchHit(url=url, title="Paywalled", snippet="")
+    fake_tavily = FakeTavily(extracts={})  # extract(url) -> ""
+
+    result = _fetch_from_search_hit(hit, bib_dir, store, embeddings, fake_tavily, None)
+
+    assert result is None
+    assert not (bib_dir / "_sources" / f"{hash_url(url)}.md").exists()
+    assert store.count() == 0

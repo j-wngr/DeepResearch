@@ -10,28 +10,43 @@ app = typer.Typer()
 @app.callback()
 def main(log_level: str = typer.Option("INFO", "--log-level", help="Logging level.")) -> None:
     """Configure process-wide CLI behavior."""
+    from deepresearch.config import Config
+    from deepresearch.endpoints import resolve_ollama_endpoints
     from deepresearch.logging_setup import configure_logging
 
+    # Load the local .env before any command touches the config singleton.
+    cfg = Config.load_env()
     configure_logging(log_level)
+    # Fall back to a local Ollama when the configured hosts are unreachable
+    # (e.g. a LAN host that is not on the current network).
+    resolve_ollama_endpoints(cfg)
 
 
 def _build_configurable(cfg):
     """Build the configurable dict for graph invocation."""
     from langchain_ollama import OllamaEmbeddings as LCOllamaEmbeddings
+    from tavily import TavilyClient
 
     from deepresearch.llm import chat
     from deepresearch.rag.store import ChromaStore
+    from deepresearch.sources.pdf import HttpxPdfClient
 
-    embeddings = LCOllamaEmbeddings(
-        model=cfg.embed_model,
-        base_url=cfg.embed_base_url,
-    )
+    embeddings_kwargs = {"model": cfg.embed_model, "base_url": cfg.embed_base_url}
+    if cfg.ollama_api_key:
+        embeddings_kwargs["client_kwargs"] = {
+            "headers": {"Authorization": f"Bearer {cfg.ollama_api_key}"}
+        }
+    embeddings = LCOllamaEmbeddings(**embeddings_kwargs)
     store = ChromaStore(cfg.state_dir, embeddings.embed_query)
 
     return {
         "chat_fn": chat,
         "embeddings": embeddings,
         "store": store,
+        # Without these the subagent gates off all web/PDF acquisition and runs
+        # RAG-only, which yields empty, uncited reports on a fresh Bibliography.
+        "tavily_client": TavilyClient(api_key=cfg.tavily_api_key),
+        "pdf_client": HttpxPdfClient(),
         "bibliography_dir": str(cfg.bibliography_dir),
         "state_dir": str(cfg.state_dir),
         "output_dir": str(cfg.output_dir),
@@ -45,10 +60,12 @@ def _do_sync(cfg):
     from deepresearch.rag.index import reconcile
     from deepresearch.rag.store import ChromaStore
 
-    embeddings = LCOllamaEmbeddings(
-        model=cfg.embed_model,
-        base_url=cfg.embed_base_url,
-    )
+    embeddings_kwargs = {"model": cfg.embed_model, "base_url": cfg.embed_base_url}
+    if cfg.ollama_api_key:
+        embeddings_kwargs["client_kwargs"] = {
+            "headers": {"Authorization": f"Bearer {cfg.ollama_api_key}"}
+        }
+    embeddings = LCOllamaEmbeddings(**embeddings_kwargs)
     store = ChromaStore(cfg.state_dir, embeddings.embed_query)
     reconcile(cfg.bibliography_dir, store, embeddings)
 
@@ -148,6 +165,7 @@ def run(question: str) -> None:
             "verify_attempts": 0,
             "verify_unsupported": [],
             "verify_dangling": [],
+            "user_approved": False,
         }
 
         config = {

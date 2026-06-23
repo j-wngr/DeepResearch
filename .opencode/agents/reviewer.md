@@ -1,8 +1,7 @@
 ---
 description: Reviews code for correctness, test coverage, architecture compliance, and project conventions. Runs pytest and ruff to gate changes or audit existing code.
 mode: subagent
-model: ollama-cloud/deepseek-v4-pro
-reasoningEffort: high
+model: ollama-cloud/glm-5.2
 temperature: 0.2
 permission:
   "*": deny
