@@ -15,12 +15,17 @@ class Config:
     _instance: "Config | None" = None
 
     def __init__(self, env_file: Path | str | None = None) -> None:
-        # Load .env if present, but do NOT override already-exported env vars.
-        # This makes the precedence environment variables > .env file > defaults.
-        load_dotenv(dotenv_path=env_file, override=False)
+        # Load .env only when an env_file is explicitly provided.  This keeps the
+        # Config class testable: tests set env vars via monkeypatch and then call
+        # Config() without risking the real .env file leaking in.  The CLI and
+        # standalone scripts explicitly opt in by passing env_file=".env" (or by
+        # calling Config.load_env()).
+        if env_file is not None:
+            load_dotenv(dotenv_path=env_file, override=False)
 
         self.ollama_base_url = self._get_str("OLLAMA_BASE_URL", "http://localhost:11434")
         self.embed_base_url = self._get_str("EMBED_BASE_URL", "http://localhost:11434")
+        self.ollama_api_key = self._get_str("OLLAMA_API_KEY", "")
         self.model_fast = self._get_str("MODEL_FAST", "llama3.2:3b")
         self.model_long = self._get_str("MODEL_LONG", "llama3.2:3b")
         self.model_writer = self._get_str("MODEL_WRITER", "llama3.2:3b")
@@ -32,6 +37,9 @@ class Config:
         self.max_concurrency = self._get_int("MAX_CONCURRENCY", 2)
         # Phase 9 tuning: keep subagent loops bounded while allowing one retry pass.
         self.subagent_max_iterations = self._get_int("SUBAGENT_MAX_ITERATIONS", 3)
+        # Below this many whitelisted sources, a looping subagent supplements RAG
+        # candidates with a fresh web search instead of starving on the pool.
+        self.min_sources_per_subtopic = self._get_int("MIN_SOURCES_PER_SUBTOPIC", 3)
         self.auto_round_cap = self._get_int("AUTO_ROUND_CAP", 2)
         self.max_rounds = self._get_int("MAX_ROUNDS", 5)
         self.subtopics_target = self._get_int("SUBTOPICS_TARGET", 5)
@@ -47,14 +55,20 @@ class Config:
         self.tavily_max_retries = self._get_int("TAVILY_MAX_RETRIES", 3)
 
     @classmethod
-    def get(cls) -> "Config":
+    def get(cls, env_file: Path | str | None = None) -> "Config":
         if cls._instance is None:
-            cls._instance = cls()
+            cls._instance = cls(env_file=env_file)
         return cls._instance
 
     @classmethod
     def reset(cls) -> None:
         cls._instance = None
+
+    @classmethod
+    def load_env(cls, env_file: Path | str = ".env") -> "Config":
+        """Load the specified .env file and return the singleton config."""
+        cls.reset()
+        return cls.get(env_file=env_file)
 
     @staticmethod
     def _get_str(key: str, default: str) -> str:
@@ -76,9 +90,14 @@ class Config:
         return Path(value).resolve()
 
 
-def get_config() -> Config:
-    """Return the singleton config instance."""
-    return Config.get()
+def get_config(env_file: Path | str | None = None) -> Config:
+    """Return the singleton config instance.
+
+    Pass ``env_file=".env"`` to opt in to loading a .env file.  When called
+    without arguments the singleton is created from already-exported environment
+    variables only.
+    """
+    return Config.get(env_file=env_file)
 
 
 def reset_config() -> None:

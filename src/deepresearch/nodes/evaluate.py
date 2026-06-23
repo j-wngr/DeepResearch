@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from deepresearch.config import get_config
+from deepresearch.llm import extract_json
 from deepresearch.models import Brief, CoverageReport, QuestionScore, RoundRecord, SubTopic
 from deepresearch.paths import output_path
 from deepresearch.paths import slug as make_slug
@@ -222,7 +223,7 @@ def _user_response_to_brief_update(response: Any, brief: Brief | None) -> tuple[
 
 def _parse_json(raw: str) -> dict:
     try:
-        data = json.loads(raw)
+        data = json.loads(extract_json(raw))
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -231,7 +232,7 @@ def _parse_json(raw: str) -> dict:
 def _coerce_followups(response: Any) -> list[dict]:
     if isinstance(response, str):
         try:
-            response = json.loads(response)
+            response = json.loads(extract_json(response))
         except json.JSONDecodeError:
             return []
     if not isinstance(response, list):

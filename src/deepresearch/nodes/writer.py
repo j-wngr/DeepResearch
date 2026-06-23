@@ -74,6 +74,11 @@ def writer(state: ResearchState, config: RunnableConfig) -> dict:
     result = verify_mod.check(body, references, bibliography_dir, chat_fn=chat_fn)
     final_body = result.body
 
+    # Fail loud: citations are mandatory, so a report with zero whitelisted
+    # sources is a failed research outcome even though groundedness has nothing
+    # to check. Surface it rather than reporting verify_ok on an uncited report.
+    verify_ok = result.ok and bool(references)
+
     report_path = output_path(output_dir, slug, "report.md")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(final_body, encoding="utf-8")
@@ -85,7 +90,7 @@ def writer(state: ResearchState, config: RunnableConfig) -> dict:
     return {
         "report": final_body,
         "report_references": references,
-        "verify_ok": result.ok,
+        "verify_ok": verify_ok,
         "verify_attempts": result.attempts,
         "verify_unsupported": result.unsupported,
         "verify_dangling": result.dangling,

@@ -8,8 +8,45 @@ from deepresearch.config import get_config
 from deepresearch.models import Blocked
 from deepresearch.paths import hash_url
 
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
 
-def _is_login_wall(text: str) -> bool:
+
+class HttpxPdfClient:
+    """Real PDF client backed by httpx + marker.
+
+    Injected into the graph via ``config["configurable"]["pdf_client"]`` so the
+    subagent can fetch and convert PDFs. ``fetch`` returns raw bytes (or
+    ``Blocked``); ``pdf.fetch`` then saves them to the inbox. ``convert``
+    delegates to the module-level marker conversion. Tests inject a fake with
+    the same surface instead.
+    """
+
+    _HEADERS = {"User-Agent": _BROWSER_USER_AGENT}
+
+    def fetch(self, url: str) -> bytes | Blocked:
+        try:
+            response = httpx.get(url, headers=self._HEADERS, follow_redirects=True, timeout=30)
+        except Exception as exc:  # noqa: BLE001 - any transport failure blocks the fetch.
+            return Blocked(url, reason=f"download failed: {exc}")
+        if response.status_code in (401, 403):
+            return Blocked(url)
+        if response.status_code >= 400:
+            return Blocked(url, reason=f"HTTP {response.status_code}")
+
+        content_type = response.headers.get("content-type", "")
+        text = response.text if not content_type.startswith("application/pdf") else ""
+        if text and is_login_wall(text):
+            return Blocked(url)
+        return response.content
+
+    def convert(self, path: Path) -> str:
+        return convert(path, converter=None)
+
+
+def is_login_wall(text: str) -> bool:
     """Heuristic: common login-wall markers in response bodies."""
     lowered = text.lower()
     markers = [
@@ -23,6 +60,10 @@ def _is_login_wall(text: str) -> bool:
         "membership required",
     ]
     return any(marker in lowered for marker in markers)
+
+
+# Backwards-compatible alias for code/tests that used the private name.
+_is_login_wall = is_login_wall
 
 
 def fetch(
@@ -47,7 +88,7 @@ def fetch(
 
         content_type = response.headers.get("content-type", "")
         text = response.text if not content_type.startswith("application/pdf") else ""
-        if text and _is_login_wall(text):
+        if text and is_login_wall(text):
             return Blocked(url)
 
         pdf_bytes = response.content

@@ -12,6 +12,7 @@ from deepresearch.models import SourceRef
 from deepresearch.rag.index import chunk_markdown, ingest, reconcile
 from deepresearch.rag.retrieve import candidates
 from deepresearch.rag.store import ChromaStore
+from deepresearch.sources import pool
 
 
 def seed_source(bib_dir: Path, source_id: str, content: str) -> Path:
@@ -90,6 +91,94 @@ def test_idempotent_upsert(tmp_workspace, embeddings):
 
     assert count_after_second == count_after_first
     assert count_after_second > 0
+
+
+@pytest.mark.unit
+def test_ingest_tags_provenance_metadata(tmp_workspace, embeddings):
+    """Per-run ingest tags chunks with the discovering super/sub topic so the
+    provenance re-rank boost can actually fire on later runs."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+
+    source_id = "provenance-source"
+    seed_source(bib_dir, source_id, "# Title\n\nThe quick brown fox.\n")
+    source_ref = SourceRef(
+        id=source_id,
+        type="pdf",
+        url=None,
+        title="Title",
+        source_path=f"_sources/{source_id}.md",
+        retrieved_at="2024-01-01T00:00:00Z",
+        content_hash="abc123",
+    )
+
+    store = ChromaStore(state_dir, embeddings.embed_query)
+    ingest(
+        source_ref,
+        store,
+        embeddings,
+        bib_dir,
+        super_topic="my-research",
+        sub_topic="my-subtopic",
+    )
+
+    meta = store.collection.get(ids=[f"{source_id}:0"], include=["metadatas"])["metadatas"][0]
+    assert meta["super_topic"] == "my-research"
+    assert meta["sub_topic"] == "my-subtopic"
+
+
+@pytest.mark.unit
+def test_ingest_indexes_body_not_frontmatter(tmp_workspace, embeddings):
+    """Indexing must use the frontmatter-stripped body the gate grounds on, not
+    the raw file -- otherwise embeddings carry YAML noise and an empty-body
+    source becomes a retrievable 'frontmatter chunk'."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+
+    ref = pool.save_web(
+        "# Heading\n\nGreen tea lowers blood pressure in adults.",
+        "http://ex.com/article",
+        "Green Tea and Blood Pressure",
+        bib_dir,
+    )
+    ingest(ref, store, embeddings, bib_dir)
+
+    doc = store.collection.get(ids=[f"{ref.id}:0"], include=["documents"])["documents"][0]
+    assert "Green tea lowers blood pressure in adults." in doc
+    # Frontmatter keys must not leak into the indexed/embedded text.
+    assert "content_hash:" not in doc
+    assert "source_path:" not in doc
+    assert "retrieved_at:" not in doc
+
+
+@pytest.mark.unit
+def test_ingest_skips_empty_body_source(tmp_workspace, embeddings):
+    """A source whose body is empty (e.g. a failed extract saved as frontmatter
+    only) must index zero chunks so it is never retrieved as a candidate."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+
+    ref = pool.save_web("", "http://ex.com/empty", "Green Tea Empty Page", bib_dir)
+    ingest(ref, store, embeddings, bib_dir)
+
+    assert store.count() == 0
+
+
+@pytest.mark.unit
+def test_reconcile_skips_empty_body_source(tmp_workspace, embeddings):
+    """Reconcile must not index empty-body pool sources either."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+
+    pool.save_web("", "http://ex.com/empty", "Empty", bib_dir)
+    pool.save_web("# Real\n\nGreen tea has catechins.", "http://ex.com/real", "Real", bib_dir)
+
+    indexed = reconcile(bib_dir, store, embeddings)
+    assert indexed == 1  # only the non-empty source counts
+    assert store.count() > 0
 
 
 @pytest.mark.unit

@@ -16,7 +16,7 @@
     },
     "build": {
       "mode": "primary",
-      "model": "ollama-cloud/kimi-k2.7-code",
+      "model": "ollama-cloud/minimax-m3",
       "temperature": 0.2
     }
   }

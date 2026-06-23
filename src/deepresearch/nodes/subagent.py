@@ -21,6 +21,7 @@ from langgraph.types import interrupt
 
 from deepresearch import acquisition
 from deepresearch.config import get_config
+from deepresearch.llm import extract_json
 from deepresearch.models import (
     AcquisitionRequest,
     AcquisitionResponse,
@@ -130,8 +131,17 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
             seen_ids.add(source_id)
             candidates.append(source_ref)
 
-    # Gap fill: if no local candidates, search the web.
-    if not candidates and tavily_client is not None:
+    # Gap fill via web search. RAG stays first: on the initial pass we only
+    # search the web when the pool yielded nothing. But once the subagent has
+    # looped (the quality gate failed and sent us back here), RAG keeps
+    # returning the same already-rejected candidates, so we must supplement with
+    # a web search whenever too few sources have actually been whitelisted --
+    # otherwise a pool holding a single off-topic source starves every sub-topic.
+    target = get_config().min_sources_per_subtopic
+    need_web = (not candidates) or (
+        state["iteration"] > 0 and len(whitelisted_ids) < target
+    )
+    if need_web and tavily_client is not None:
         for query in queries:
             hits = web.search(query, tavily_client)
             for hit in hits:
@@ -145,6 +155,8 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
                     embeddings,
                     tavily_client,
                     pdf_client,
+                    super_topic=super_slug,
+                    sub_topic=sub.slug,
                 )
                 if isinstance(source_ref, Blocked):
                     request = acquisition.build_request(source_ref.url, hit.title, bibliography_dir)
@@ -230,6 +242,8 @@ def _fetch_from_search_hit(
     embeddings,
     tavily_client,
     pdf_client,
+    super_topic: str = "",
+    sub_topic: str = "",
 ) -> SourceRef | Blocked | None:
     """Fetch/convert/save/ingest a single search hit, returning its SourceRef."""
     from deepresearch.rag import index as rag_index
@@ -242,6 +256,11 @@ def _fetch_from_search_hit(
         fetch_result = pdf_source.fetch(hit.url, pdf_client, bibliography_dir)
         if isinstance(fetch_result, Path):
             markdown = pdf_source.convert(fetch_result, pdf_client)
+            if not markdown or not markdown.strip():
+                # A PDF that converts to nothing is not a usable source; skip it
+                # rather than poison the pool with an empty-body entry.
+                logger.warning("Empty conversion for %s; skipping", hit.url)
+                return None
             source_ref = pool.save_pdf(
                 fetch_result.read_bytes(),
                 markdown,
@@ -253,9 +272,22 @@ def _fetch_from_search_hit(
             return fetch_result
     else:
         markdown = web.extract(hit.url, tavily_client)
+        if not markdown or not markdown.strip():
+            # An empty extract (paywall, JS-only page, extractor miss) must not
+            # be saved -- an empty-body source is retrieved by RAG yet rejected
+            # by the gate, and it suppresses the web-search gap-fill.
+            logger.warning("Empty extract for %s; skipping", hit.url)
+            return None
         source_ref = pool.save_web(markdown, hit.url, hit.title, bibliography_dir)
 
-    rag_index.ingest(source_ref, store, embeddings, bibliography_dir)
+    rag_index.ingest(
+        source_ref,
+        store,
+        embeddings,
+        bibliography_dir,
+        super_topic=super_topic,
+        sub_topic=sub_topic,
+    )
     return source_ref
 
 
@@ -341,9 +373,19 @@ def _synthesize_node(state: SubAgentState, config: RunnableConfig) -> dict:
     scratchpad = state["scratchpad"]
 
     evidence_text = _format_evidence(evidence)
+
+    # Build an explicit citation key table so the LLM can emit citations that
+    # directly reference the stable source ids, improving downstream resolution.
+    citation_keys: list[str] = []
+    for idx, ref in enumerate(state["whitelisted"], start=1):
+        citation_keys.append(f"[{ref.id}] — {ref.title} (index {idx})")
+    keys_text = "\n".join(citation_keys) if citation_keys else "(no whitelisted sources yet)"
+
     prompt = (
         f"Sub-topic: {sub.title}\n"
         f"Scope: {sub.scope}\n\n"
+        "CITATION KEYS — use these exact source identifiers in [brackets] for every claim:\n"
+        f"{keys_text}\n\n"
         "Guiding questions:\n" + "\n".join(f"- {q}" for q in sub.guiding_questions) + "\n\n"
         "Distilled evidence:\n"
         "---\n"
@@ -354,8 +396,8 @@ def _synthesize_node(state: SubAgentState, config: RunnableConfig) -> dict:
         f"{scratchpad}\n"
         "---\n\n"
         "Draft a sub-report that answers the guiding questions. Every claim "
-        "must carry an inline citation using the stable source id in the form "
-        "[source_id]. Return only the report body."
+        "must carry an inline citation using one of the exact citation keys "
+        "listed above, in the form [source_id]. Return only the report body."
     )
 
     draft = chat_fn("synth", [{"role": "user", "content": prompt}])
@@ -396,6 +438,15 @@ def _quality_gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
 
     response = chat_fn("synth", [{"role": "user", "content": prompt}])
     result = _parse_quality_gate_response(response)
+    # Fail loud: a draft with no distilled evidence cannot pass, regardless of
+    # what the scorer says. Forcing a non-pass lets the subagent loop (and the
+    # web gap-fill in ``_acquire_node`` run) before emitting a shortfall report.
+    if result.passed and not state["evidence"]:
+        result = QualityGateResult(
+            passed=False,
+            coverage_score=result.coverage_score,
+            reason="no evidence gathered; cannot pass quality gate",
+        )
     gaps = list(state.get("acquisition_gaps", []))
 
     updates: dict[str, Any] = {"quality_gate_result": result}
@@ -468,7 +519,7 @@ def _append_gap_paragraph(body: str, gaps: list[str]) -> str:
 
 def _parse_quality_gate_response(response: str) -> QualityGateResult:
     try:
-        data = json.loads(response)
+        data = json.loads(extract_json(response))
     except json.JSONDecodeError:
         logger.warning("Failed to parse quality gate response as JSON: %s", response)
         return QualityGateResult(passed=False, coverage_score=0.0, reason="JSON parse error")

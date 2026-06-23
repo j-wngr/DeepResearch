@@ -1,10 +1,30 @@
 """Ollama chat client with role-tiered model resolution."""
 
+import re
+
 import httpx
 from langchain_ollama import ChatOllama
 
 from deepresearch.config import get_config
 from deepresearch.retry import OllamaTransientError, retry_call
+
+_FENCE_PATTERN = re.compile(
+    r"^\s*(?:```(?:json)?\s*\n)?(.+?)(?:\n\s*```)?\s*$",
+    re.DOTALL,
+)
+
+
+def extract_json(response: str) -> str:
+    """Strip markdown code fences and surrounding whitespace from an LLM response.
+
+    Real chat models frequently wrap JSON payloads in ```` ```json ... ``` ```
+    fences even when the prompt asks for raw JSON. ``json.loads`` rejects those,
+    so callers should pass responses through this helper before parsing.
+    """
+    if response is None:
+        return ""
+    match = _FENCE_PATTERN.match(response)
+    return match.group(1) if match else response.strip()
 
 
 def chat(role: str, messages: list) -> str:
@@ -24,7 +44,10 @@ def chat(role: str, messages: list) -> str:
         "eval": cfg.model_writer,
     }.get(role, cfg.model_fast)
 
-    llm = ChatOllama(model=model_name, base_url=cfg.ollama_base_url)
+    kwargs: dict = {"model": model_name, "base_url": cfg.ollama_base_url}
+    if cfg.ollama_api_key:
+        kwargs["client_kwargs"] = {"headers": {"Authorization": f"Bearer {cfg.ollama_api_key}"}}
+    llm = ChatOllama(**kwargs)
 
     def _invoke():
         """Invoke Ollama; retry only transport-like transient failures.

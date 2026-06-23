@@ -9,6 +9,7 @@ from pathlib import Path
 
 from deepresearch.citations import extract_inline_citations
 from deepresearch.config import get_config
+from deepresearch.llm import extract_json
 from deepresearch.models import SourceRef
 from deepresearch.sources import pool as pool_module
 
@@ -67,7 +68,7 @@ def _claim_for_n(body: str, n: int) -> str | None:
 
 def _parse_supported(response: str) -> tuple[bool, str]:
     try:
-        data = json.loads(response)
+        data = json.loads(extract_json(response))
         return bool(data.get("supported", False)), str(data.get("reason", ""))
     except json.JSONDecodeError:
         compact = re.sub(r"\s+", "", response.lower())

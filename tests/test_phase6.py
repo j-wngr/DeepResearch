@@ -308,6 +308,32 @@ def _run_happy_graph(tmp_workspace):
     return final_state, out_dir, bib_dir, run_slug
 
 
+@pytest.mark.unit
+def test_writer_fails_loud_on_zero_references(tmp_workspace):
+    """Citations are mandatory: a finalized report whose sub-reports yield zero
+    whitelisted sources must report verify_ok=False, not pass silently."""
+    from deepresearch.nodes.writer import writer
+
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    out_dir = tmp_workspace["output_dir"]
+
+    subreport = SubReport(
+        subtopic_slug="empty-topic",
+        body="No whitelisted sources were available for this sub-topic.",
+        citations=[],
+        shortfall="no evidence gathered",
+    )
+    config = _build_config(bib_dir, state_dir, out_dir, FakeChat({}))
+    state = _initial_state("Q", "zero-ref-slug")
+    state["subreports"] = {"empty-topic": subreport}
+
+    result = writer(state, config)
+
+    assert result["report_references"] == []
+    assert result["verify_ok"] is False
+
+
 @pytest.mark.integration
 def test_writer_persists_report_and_references(tmp_workspace):
     final_state, out_dir, _, run_slug = _run_happy_graph(tmp_workspace)
