@@ -66,6 +66,9 @@ class Config:
         # When True, only sources already present in the Bibliography are used;
         # web searches and PDF fetches are skipped entirely.
         self.bibliography_only = self._get_bool("BIBLIOGRAPHY_ONLY", False)
+        # When False, the LLM source quality gate is disabled for newly fetched
+        # sources; heuristic checks in sources/quality.py still apply via prune.
+        self.quality_gate_enabled = self._get_bool("QUALITY_GATE_ENABLED", True)
 
     @classmethod
     def get(cls, env_file: Path | str | None = None) -> "Config":

@@ -96,7 +96,9 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
     embeddings = configurable.get("embeddings")
     tavily_client = configurable.get("tavily_client")
     pdf_client = configurable.get("pdf_client")
+    chat_fn = configurable.get("chat_fn")
     bibliography_dir = Path(configurable["bibliography_dir"])
+    state_dir = Path(configurable.get("state_dir", str(get_config().state_dir)))
 
     from deepresearch.rag import index as rag_index
     from deepresearch.rag import retrieve
@@ -179,6 +181,21 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
                     continue
                 if source_ref is None:
                     continue
+                quality_gate_enabled = configurable.get("quality_gate_enabled", get_config().quality_gate_enabled)
+                if chat_fn is not None and quality_gate_enabled:
+                    from deepresearch import source_quality
+                    from deepresearch.sources import pool as _pool
+                    ok, reason = source_quality.assess(
+                        source_ref, bibliography_dir, state_dir, chat_fn=chat_fn
+                    )
+                    if not ok:
+                        logger.info(
+                            "Source quality gate rejected %s (%s); removing from pool",
+                            source_ref.id,
+                            reason,
+                        )
+                        _pool.remove(source_ref.id, bibliography_dir)
+                        continue
                 seen_ids.add(source_ref.id)
                 candidates.append(source_ref)
 

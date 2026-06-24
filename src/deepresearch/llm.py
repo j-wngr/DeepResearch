@@ -40,6 +40,7 @@ def chat(role: str, messages: list) -> str:
         "clarify": cfg.model_fast,
         "gate": cfg.model_long,
         "synth": cfg.model_long,
+        "quality": cfg.model_long,
         "writer": cfg.model_writer,
         "eval": cfg.model_writer,
     }.get(role, cfg.model_fast)

@@ -39,7 +39,7 @@ def evaluate_node(state: ResearchState, config: RunnableConfig) -> dict:
             "user_approved": False,
         }
         if brief is not None:
-            updates["brief"] = _mark_all_dirty(brief)
+            updates["brief"] = mark_all_dirty(brief)
         return updates
 
     coverage_score, coverage = _score_coverage(state, config)
@@ -78,7 +78,7 @@ def evaluate_node(state: ResearchState, config: RunnableConfig) -> dict:
             {
                 "mode": "user_facing",
                 "pending_handoff": True,
-                "brief": _mark_all_dirty(state["brief"]),
+                "brief": mark_all_dirty(state["brief"]),
             }
         )
     elif next_auto_round < cfg.auto_round_cap and not plateau and next_round < cfg.max_rounds:
@@ -94,7 +94,7 @@ def evaluate_node(state: ResearchState, config: RunnableConfig) -> dict:
             {
                 "mode": "user_facing",
                 "pending_handoff": True,
-                "brief": _mark_all_dirty(state["brief"]),
+                "brief": mark_all_dirty(state["brief"]),
             }
         )
     return updates
@@ -275,7 +275,7 @@ def _mark_dirty_for_gaps(brief: Brief, coverage: CoverageReport) -> Brief:
     )
 
 
-def _mark_all_dirty(brief: Brief) -> Brief:
+def mark_all_dirty(brief: Brief) -> Brief:
     return brief.model_copy(
         update={"subtopics": [sub.model_copy(update={"dirty": True}) for sub in brief.subtopics]}
     )

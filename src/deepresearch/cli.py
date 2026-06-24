@@ -58,6 +58,7 @@ def _build_configurable(cfg, *, skip_acquire_interrupt: bool = False, bibliograp
         "output_dir": str(cfg.output_dir),
         "skip_acquire_interrupt": effective_skip,
         "bibliography_only": bibliography_only,
+        "quality_gate_enabled": cfg.quality_gate_enabled,
     }
 
 
@@ -372,6 +373,119 @@ def status(slug: str) -> None:
         lines = report_path.read_text(encoding="utf-8").splitlines()[:20]
         for line in lines:
             typer.echo(line)
+
+
+@app.command()
+def improve(slug: str) -> None:
+    """Re-open the evaluation loop on a finished research run."""
+    from deepresearch.config import get_config
+    from deepresearch.endpoints import check_embed_model
+    from deepresearch.graph import build_graph
+    from deepresearch.nodes.evaluate import mark_all_dirty
+    from deepresearch.persistence import create_checkpointer
+
+    cfg = get_config()
+    check_embed_model(cfg)
+
+    with create_checkpointer(cfg.state_dir) as checkpointer:
+        graph = build_graph(checkpointer=checkpointer)
+        config = {"configurable": {**_build_configurable(cfg), "thread_id": slug}}
+
+        current_state = graph.get_state(config)
+        if current_state is None or not current_state.values:
+            typer.echo(f"No run found for slug: {slug}")
+            raise typer.Exit(1)
+
+        values = current_state.values
+        if not values.get("user_approved"):
+            typer.echo("Run is not yet finished. Use 'resume' instead.")
+            raise typer.Exit(1)
+
+        brief = values.get("brief")
+        if brief is None:
+            typer.echo("No brief found; cannot improve.")
+            raise typer.Exit(1)
+
+        graph.update_state(
+            config,
+            {
+                "user_approved": False,
+                "pending_handoff": True,
+                "auto_round": 0,
+                "brief": mark_all_dirty(brief),
+            },
+            as_node="writer",
+        )
+        _run_interactive(graph, None, config)
+
+
+@app.command()
+def prune(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be removed without making any changes.",
+    ),
+) -> None:
+    """Quality-gate all Bibliography sources; delete garbage and update the RAG."""
+    from langchain_ollama import OllamaEmbeddings as LCOllamaEmbeddings
+
+    from deepresearch import source_quality
+    from deepresearch.config import get_config
+    from deepresearch.llm import chat
+    from deepresearch.rag import index as rag_index
+    from deepresearch.rag.store import ChromaStore
+    from deepresearch.sources import pool
+    from deepresearch.sources.quality import is_acceptable
+
+    cfg = get_config()
+
+    embeddings_kwargs = {"model": cfg.embed_model, "base_url": cfg.embed_base_url}
+    if cfg.ollama_api_key:
+        embeddings_kwargs["client_kwargs"] = {
+            "headers": {"Authorization": f"Bearer {cfg.ollama_api_key}"}
+        }
+    embeddings = LCOllamaEmbeddings(**embeddings_kwargs)
+    store = ChromaStore(cfg.state_dir, embeddings.embed_query)
+
+    sources_dir = cfg.bibliography_dir / "_sources"
+    if not sources_dir.exists():
+        typer.echo("No sources found.")
+        return
+
+    pruned = 0
+    kept = 0
+    for md_file in sorted(sources_dir.glob("*.md")):
+        source_id = md_file.stem
+        try:
+            source_ref = pool.get_ref(source_id, cfg.bibliography_dir)
+            body = pool.get(source_id, cfg.bibliography_dir)
+        except (FileNotFoundError, ValueError) as exc:
+            typer.echo(f"  skip {source_id}: {exc}")
+            continue
+
+        if not is_acceptable(
+            body, min_words=cfg.min_source_words, max_link_density=cfg.max_link_density
+        ):
+            ok, reason = False, "heuristic: too short or link-heavy"
+        else:
+            ok, reason = source_quality.assess(source_ref, cfg.bibliography_dir, cfg.state_dir, chat_fn=chat)
+
+        if ok:
+            kept += 1
+        else:
+            typer.echo(f"  prune {source_id} ({source_ref.title}): {reason}")
+            if not dry_run:
+                pool.remove(source_id, cfg.bibliography_dir)
+                store.delete(source_id)
+            pruned += 1
+
+    suffix = " (dry run)" if dry_run else ""
+    typer.echo(f"\nPruned: {pruned}  Kept: {kept}{suffix}")
+    if not dry_run and pruned > 0:
+        typer.echo("Reconciling index...")
+        rag_index.reconcile(cfg.bibliography_dir, store, embeddings)
+        typer.echo("Done.")
 
 
 if __name__ == "__main__":

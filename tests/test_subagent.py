@@ -141,6 +141,9 @@ def _run_subagent_with_subtopic(
             "bibliography_dir": str(bibliography_dir),
             "state_dir": str(state_dir),
             "output_dir": str(output_dir),
+            # Quality gate is off by default in unit/integration tests so existing
+            # tests don't need to script quality LLM responses.
+            "quality_gate_enabled": False,
             **(extra_configurable or {}),
         }
     }

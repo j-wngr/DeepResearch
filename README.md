@@ -9,7 +9,7 @@ Inspired by [LangChain's Open Deep Research](https://www.langchain.com/blog/open
 1. You provide a research question.
 2. The agent asks a short round of clarifying questions, then proposes a breakdown into sub-topics.
 3. You approve or revise the research brief.
-4. Sub-topic research agents run in parallel, searching the web (Tavily) and a local RAG over previously gathered sources. Each source passes a fast quality filter (word count, link density) and an LLM relevance gate; sources that fail are removed from the pool so they don't pollute future runs.
+4. Sub-topic research agents run in parallel, searching the web (Tavily) and a local RAG over previously gathered sources. Each newly fetched source first passes a **quality gate** (heuristic + LLM: is this real content or garbage?) and then a **relevance gate** (is this relevant to the sub-topic?). Sources that fail either gate are removed from the pool so they don't pollute future runs.
 5. A writer agent synthesizes all findings into one cited report.
 6. An evaluator scores coverage and loops autonomously (up to a configurable cap) before handing off to you for a final approval.
 
@@ -58,6 +58,7 @@ Key settings:
 | `MAX_CONCURRENCY` | Parallel sub-topic agents (tune to your Ollama server) |
 | `SKIP_ACQUIRE_INTERRUPT` | `true` — silently skip blocked sources instead of pausing for a manual download |
 | `BIBLIOGRAPHY_ONLY` | `true` — use only sources already in the Bibliography; skip all web searches |
+| `QUALITY_GATE_ENABLED` | `true` (default) — run the LLM source quality gate on newly fetched sources |
 
 ## Usage
 
@@ -133,6 +134,29 @@ uv run deepresearch status <slug>
 ```
 
 Shows round number, whether a brief/report exists, and a preview of the report if one has been written.
+
+### Improve a finished run
+
+Re-open the evaluation loop on a completed run to refine or extend the report:
+
+```bash
+uv run deepresearch improve <slug>
+```
+
+The run's current report and coverage gaps are shown; type `approve` to accept it as-is, or describe changes you want (e.g. "expand the section on X" or add new sub-topics). Research re-runs only if you request changes.
+
+### Prune the Bibliography
+
+Quality-gate every source in the Bibliography, remove garbage (navigation pages, link farms, cookie walls), and update the RAG index:
+
+```bash
+uv run deepresearch prune
+uv run deepresearch prune --dry-run   # preview without deleting
+```
+
+The gate runs in two phases: a fast heuristic check (word count, link density), then an LLM judgment for borderline sources. Only clear garbage is removed — borderline content is kept.
+
+Set `QUALITY_GATE_ENABLED=false` to disable the LLM phase of the gate (the heuristic check still runs during `prune`).
 
 ### Sync the Bibliography
 
