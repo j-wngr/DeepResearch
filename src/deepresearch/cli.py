@@ -139,7 +139,7 @@ def _run_interactive(graph, input_state, config):
         interrupts = result.get("__interrupt__", [])
         if not interrupts:
             typer.echo("\nResearch run complete.")
-            typer.echo(f"Output: {config['configurable']['output_dir']}/{config['thread_id']}/")
+            typer.echo(f"Output: {config['configurable']['output_dir']}/{config['configurable']['thread_id']}/")
             return result
         for interrupt_data in interrupts:
             _display_interrupt(interrupt_data.value)
@@ -193,8 +193,7 @@ def run(question: str) -> None:
         }
 
         config = {
-            "configurable": _build_configurable(cfg),
-            "thread_id": run_slug,
+            "configurable": {**_build_configurable(cfg), "thread_id": run_slug},
         }
 
         _run_interactive(graph, initial_state, config)
@@ -220,8 +219,7 @@ def resume(slug: str) -> None:
         graph = build_graph(checkpointer=checkpointer)
 
         config = {
-            "configurable": _build_configurable(cfg),
-            "thread_id": slug,
+            "configurable": {**_build_configurable(cfg), "thread_id": slug},
         }
 
         # Check if a run exists
