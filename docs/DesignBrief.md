@@ -111,9 +111,11 @@ subagent needs info
               ok      → pdf converter (pymupdf4llm/marker/remote) → md
               blocked → interrupt(user): "save <url> as _inbox/<id>.pdf"
                         → resume → auto-detect file presence → convert → md
-          else            → extract (HTML→md) → quality pre-filter (min words, max link density)
+          else            → extract (HTML→md) → heuristic pre-filter (min words, max link density)
         → dedup → save to central source pool → ingest (chunk → embed → upsert)
-        → new doc re-enters the relevance check before it can be used
+        → LLM source quality gate (is this real content or garbage?)
+              fail → remove from pool immediately; skip to next result
+              pass → new doc re-enters the relevance check before it can be used
 ```
 
 User-supplied PDFs may also be dropped into the Bibliography inbox (`Bibliography/_inbox/`); on the next reconcile they are converted, deduped, and folded into the central pool just like web-found PDFs.
@@ -123,7 +125,7 @@ User-supplied PDFs may also be dropped into the Bibliography inbox (`Bibliograph
 - **Relevance caching** — the whitelist/discard verdict is cached per `(super-topic, sub-topic, source)`, fully qualified by super-topic slug so a verdict never leaks across runs that share a sub-topic slug. A full document is therefore not re-read on every iteration; newly fetched web/PDF sources enter the same gate before use.
 - **Web sources** — for each chosen search result, **Tavily `extract`** fetches the page and converts HTML→markdown; it is saved once to the central pool as `Bibliography/_sources/<id>.md` (`id` derived from the URL) with frontmatter (`url`, `title`, `retrieved_at`). This is the standard path for every web page: search to discover URLs, `extract` to turn each into a stored markdown source.
 - **PDFs** — `.pdf` results found during Tavily search are fetched directly with **httpx** to `Bibliography/_sources/pdfs/<id>.pdf` (`id` = `hash(url)`, so it is nameable before download; URL-less drop-ins use `hash(bytes)`), then converted to markdown by the configured PDF converter (pymupdf4llm by default) and stored in the pool under the same id.
-- **Web source quality** — extracted HTML→markdown is passed through a fast pre-filter before save: pages below a minimum word count or above a maximum link density are discarded, preventing low-signal pages (index pages, paywalls) from polluting the pool.
+- **Source quality gate** — newly fetched web/PDF sources pass through two quality checks before entering the relevance gate. First, a **fast heuristic pre-filter**: pages below a minimum word count or above a maximum link density are discarded immediately. Second, an **LLM quality judge** (`source_quality.assess()`): a topic-agnostic model decides whether the content is substantive research material or garbage (navigation page, link farm, cookie wall). Sources that fail either check are deleted from the pool immediately. RAG-retrieved existing sources skip this check during research runs; the `prune` command handles retroactive cleanup of the pool.
 - **Blocked fetches (paywalls / bot walls)** — many publishers (IEEE, ResearchGate, Elsevier, login walls) return 403/redirects so httpx cannot retrieve the PDF. When a fetch is blocked, the subagent **blocks via `interrupt()`** and asks the user to download it manually, showing the **URL, title, and the exact path to save to** (`Bibliography/_inbox/<id>.pdf`, `id` derived from the source URL). The CLI uses **auto-detection** on resume: after the user saves the files and presses Enter, the CLI checks each expected path and classifies automatically:
   1. **Saved** (file present) — runs the PDF converter → pool → relevance gate under the already-known source id (deterministic match, no guessing).
   2. **Unobtainable** (file absent) — the source is recorded as a **permanent coverage gap** and the run continues without it (the gap surfaces in the evaluator). Once declared unobtainable, the source is not re-requested on subsequent acquire iterations.

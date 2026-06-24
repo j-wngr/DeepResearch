@@ -20,6 +20,8 @@ Guiding invariants (see DesignBrief for rationale):
   - `research run "<question>"` — start a new run; derives the slug **up front from the raw question** (slugified title + short hash) and seeds the initial `ResearchState` (`question` + `slug`) before invoking the graph, so a `thread_id` exists before the first interrupt. The slug is opaque and never changes, even if clarify/approval reword the question. Runs an embed-model pre-flight check (`endpoints.check_embed_model`) before entering the graph and exits with a clear error if the configured model is not available on the Ollama host.
   - `research resume <slug>` — reattach to a thread and answer the pending interrupt (editorial or acquisition). Also runs the embed-model pre-flight check on startup.
   - `research sync` — standalone: reconcile `Bibliography/_inbox/` (convert/dedup/fold into the pool, index) without starting research. The same reconcile also runs automatically at the start of every `run`/`resume`, before fan-out.
+  - `research improve <slug>` — re-open the evaluation/refinement loop on a *finished* run (`user_approved=True`). Injects `pending_handoff=True` into the checkpoint via `graph.update_state(as_node="writer")` so `evaluate` fires immediately, presenting the current report + coverage gaps. Research re-runs only if the user requests changes.
+  - `research prune [--dry-run]` — quality-gate all sources in `Bibliography/_sources/`; remove garbage (heuristic + LLM check) from the pool and Chroma, then reconcile the RAG index. `--dry-run` reports what would be removed without touching files.
   - `research list` / `research status <slug>` — inspect threads (optional, nice-to-have).
 - **Interrupt handling** — the CLI renders the pending interrupt payload (clarify questions, brief for approval, follow-ups, or a batch of blocked downloads) and collects the response, then calls the graph with a `Command(resume=...)`. Concurrent acquisition interrupts arrive as a batch (resume map keyed by interrupt id).
 - **Remote dependency** — Ollama (chat + embeddings) over HTTP at a configurable base URL; the only stateful external service besides Tavily.
@@ -47,9 +49,11 @@ Conditional edges out of `evaluate` implement the two-tier refinement loop via e
 
 ### 3.2 Subagent subgraph
 
-`plan → acquire (RAG → web/PDF) → relevance gate → reflect → synthesize draft → quality gate`
+`plan → acquire (RAG → web/PDF → source quality gate) → relevance gate → reflect → synthesize draft → coverage quality gate`
 
-The quality gate is the exit criterion: it scores **coverage** (every `guiding_question` addressed?) and does a **cheap groundedness self-check against the distilled evidence** (does each claim have a backing quote?). Pass → emit report; fail → loop to `acquire` (bounded by `max_iterations`); cap hit → emit with shortfall flagged. Acquisition gaps are carried as context through the loop and are surfaced in the final shortfall only if the subagent cannot recover with other sources. This is a fast per-sub-topic check — authoritative full-document groundedness happens once, globally, at `verify` (#6, §6.4). On emit, the subagent **writes its own** `research/<slug>/<sub-topic-slug>/report.md` (#8). Acquisition may raise a blocking interrupt for a manual download (§6.2).
+**Source quality gate** (inline in `acquire`): newly fetched web/PDF sources are judged by `source_quality.assess()` before entering the relevance gate — a two-phase check: heuristic pre-screen (`sources/quality.is_acceptable`) then LLM `"quality"` role. Garbage (navigation pages, link farms, cookie walls) is deleted from the pool immediately and not passed downstream. RAG-retrieved existing pool sources skip this check during research runs; standalone cleanup is handled by `prune`. Verdicts are cached at `state_dir/quality_cache.json` keyed by `source_id` only (topic-agnostic). Controlled by `QUALITY_GATE_ENABLED` (default `true`).
+
+**Coverage quality gate** (subgraph exit criterion): scores **coverage** (every `guiding_question` addressed?) and does a **cheap groundedness self-check against the distilled evidence** (does each claim have a backing quote?). Pass → emit report; fail → loop to `acquire` (bounded by `max_iterations`); cap hit → emit with shortfall flagged. Acquisition gaps are carried as context through the loop and are surfaced in the final shortfall only if the subagent cannot recover with other sources. This is a fast per-sub-topic check — authoritative full-document groundedness happens once, globally, at `verify` (#6, §6.4). On emit, the subagent **writes its own** `research/<slug>/<sub-topic-slug>/report.md` (#8). Acquisition may raise a blocking interrupt for a manual download (§6.2).
 
 The loop is context-engineered (§10): it carries a **scratchpad** (findings, tried queries, open questions) and **distilled evidence** rather than raw message history. Concretely, once the gate distills a document the raw body is dropped from the subagent's message list (trajectory compaction) — only the `scratchpad`, `EvidenceExtract`s, and `SourceRef`s persist in state.
 
@@ -128,7 +132,7 @@ Note the deliberate **state-schema isolation** (§10): full document bodies neve
 ```text
 src/deepresearch/
   __init__.py
-  cli.py            # Typer/argparse entry: run, resume, sync, list, status
+  cli.py            # Typer/argparse entry: run, resume, sync, improve, prune, list, status
   config.py         # Settings (env + file), path roots, model tiers, caps
   paths.py          # slug derivation, output_dir/bibliography_dir resolution
   models.py         # Pydantic domain models (§4.3)
@@ -155,6 +159,7 @@ src/deepresearch/
     quality.py      # word-count + link-density pre-filter for web extracts
     inbox.py        # _inbox reconcile
   gate.py           # full-document relevance gate + verdict cache
+  source_quality.py # topic-agnostic LLM source quality gate + quality cache
   citations.py      # key resolution, merge, global renumber
   verify.py         # resolution (programmatic) + groundedness (LLM)
 ```
@@ -179,7 +184,7 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
   - `pool.save_web(markdown, url, meta) -> SourceRef`: `id = hash(url)`; write `_sources/<id>.md` (+frontmatter).
   - `pool.save_pdf(pdf_bytes, markdown, url, meta) -> SourceRef`: `id = hash(url)` if `url` else `hash(pdf_bytes)`; write `_sources/pdfs/<id>.pdf` **and** `_sources/<id>.md` under the same id.
   - `pool.get(id) -> full markdown`. Both savers dedup before writing.
-- `web.search(query) -> list[SearchHit]` where `SearchHit { url, title, snippet }`; `web.extract(url) -> markdown` (Tavily, with a configurable inter-request delay). Web id = `hash(url)`; re-fetch updates in place. Extracted markdown is passed through a **quality pre-filter** (`sources/quality.py`) before save: pages below `min_source_words` (default 150) or above `max_link_density` (default 0.5) are silently discarded.
+- `web.search(query) -> list[SearchHit]` where `SearchHit { url, title, snippet }`; `web.extract(url) -> markdown` (Tavily, with a configurable inter-request delay). Web id = `hash(url)`; re-fetch updates in place. Extracted markdown is passed through a **heuristic pre-filter** (`sources/quality.py`) before save: pages below `min_source_words` (default 150) or above `max_link_density` (default 0.5) are silently discarded. After save, newly fetched sources also pass through the **LLM source quality gate** (`source_quality.py`) before entering the relevance gate — see §3.2.
 - `pdf.fetch(url) -> path | Blocked`: httpx download; on 403/login-wall returns `Blocked`, which the subagent turns into an **acquisition `interrupt()`** carrying `{url, title, save_path=_inbox/<id>.pdf}` with `id = hash(url)` — nameable before the bytes exist (#2). On resume the CLI auto-detects whether the file was placed at the expected path: present → `saved`; absent → `unobtainable` (permanent gap). The `alternative` response kind (user pastes an open-access URL) is supported at the model layer but not surfaced by the current CLI. `pdf.convert(path) -> markdown` via **pymupdf4llm** (default, `PDF_CONVERTER=pymupdf`), optional **marker** (`PDF_CONVERTER=marker`, requires `uv sync --extra ocr`), or a **remote converter service** (`PDF_CONVERTER=remote`, `PDF_CONVERTER_URL=...`).
 - `inbox.reconcile()`: convert/dedup/fold dropped PDFs into the pool.
 
@@ -194,7 +199,7 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
 
 ### 6.5 LLM tiers (`llm.py`)
 
-`chat(role, messages)` where `role ∈ {clarify, gate, synth, writer, eval}` maps to a configured model. `gate`/`synth` require the large-context model; `writer`/`eval` the strong model; `clarify` the fast model.
+`chat(role, messages)` where `role ∈ {clarify, gate, synth, writer, eval, quality}` maps to a configured model. `gate`/`synth`/`quality` use the large-context model; `writer`/`eval` the strong model; `clarify` the fast model.
 
 ## 7. Storage & filesystem layout
 
@@ -202,7 +207,8 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
 .deepresearch/                 # run state (git-ignored)
   checkpoints.sqlite           # LangGraph checkpointer
   chroma/                      # global vector store
-  relevance_cache.json       # whitelist verdict cache
+  relevance_cache.json         # whitelist verdict cache (keyed by super+sub+source)
+  quality_cache.json           # source quality verdict cache (keyed by source_id)
 
 Bibliography/                  # knowledge: sources only (bibliography_dir)
   _inbox/                      # user-dropped / manual downloads, pre-reconcile
@@ -228,7 +234,7 @@ Layered: env vars > config file > defaults. Settings:
 - Model tiers (`model_fast`, `model_long`, `model_writer`) and `embed_model`.
 - Paths: `bibliography_dir` (default `./Bibliography`), `output_dir` (default `./Research`), `state_dir` (default `./.deepresearch`).
 - PDF converter: `pdf_converter` (`pymupdf` | `marker` | `remote`, default `pymupdf`); `pdf_converter_url` and `pdf_converter_api_key` for the remote mode.
-- Source quality: `min_source_words` (default 150), `max_link_density` (default 0.5) — web-page pre-filter thresholds.
+- Source quality: `min_source_words` (default 150), `max_link_density` (default 0.5) — heuristic pre-filter thresholds. `quality_gate_enabled` (`QUALITY_GATE_ENABLED`, default `true`) — enable/disable the LLM source quality gate for newly fetched sources.
 - Tavily: `tavily_api_key` — **from environment only**, never persisted; `tavily_request_delay` (default 1.0 s) — inter-request pause to avoid rate-limiting.
 - Caps/knobs: `max_concurrency`, `subagent_max_iterations`, `auto_round_cap`, `max_rounds`, `subtopics_target` (3–7), `subtopics_ceiling` (12), `retrieval_k`, `similarity_floor`, `provenance_boost`, `doc_size_cap`, `writer_max_revisions`.
 
