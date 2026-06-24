@@ -131,7 +131,8 @@ User-supplied PDFs may also be dropped into the Bibliography inbox (`Bibliograph
   2. **Unobtainable** (file absent) — the source is recorded as a **permanent coverage gap** and the run continues without it (the gap surfaces in the evaluator). Once declared unobtainable, the source is not re-requested on subsequent acquire iterations.
   3. **Alternative URL** (model layer only, not surfaced by the current CLI) — the user provides an open-access URL; the agent fetches that instead.
 
-  This is an **acquisition** block, not an editorial decision — see the autonomy note above.
+  This is an **acquisition** block, not an editorial decision — see the autonomy note above. To skip the prompt entirely and treat all blocked sources as unobtainable automatically, pass `--skip-acquire` to `run` or `resume` (or set `SKIP_ACQUIRE_INTERRUPT=true`).
+- **Bibliography-only mode** — when `--bibliography-only` is passed (or `BIBLIOGRAPHY_ONLY=true`), all Tavily web searches and PDF fetches are disabled for the run; subagents use only sources already present in the Bibliography pool (RAG retrieval only). Useful for synthesising from a pre-loaded collection without making any external requests.
 - **Dedup & source identity** — a source's **identity is its URL when it has one** (web pages and PDFs-by-URL): the id is `hash(url)`, and a same-URL re-fetch with changed content **updates the existing doc in place** (overwrite markdown, bump `retrieved_at`, re-embed), keeping one logical reference and one citation key. The `content_hash` is stored to *detect* whether a re-fetch actually changed; only **URL-less drop-in files** are identified by `hash(bytes)`. Dedup runs on the id before saving and before embedding — nothing is stored or embedded twice.
 
 ### Indexing
@@ -202,6 +203,18 @@ writer → evaluate (report + sources ⇄ brief: coverage & support per guiding_
   - *User-facing rounds* (the hand-off and any subsequent user-driven round) fan out over **all** sub-topics — a full **consistency re-run** so that every per-sub-topic report and the final report are mutually consistent at exactly the moment a human reads them (a new sub-topic can surface evidence that updates or contradicts an earlier one). Cost is contained either way because re-runs reuse the cached whitelist verdicts, the central source pool, and the global RAG from prior rounds — an unchanged sub-topic mostly re-reads known sources rather than re-fetching them.
 - **Report handling** — the report is **overwritten** each round (single `report.md`); run state across rounds is recorded by the LangGraph checkpointer.
 - **Termination** — two caps apply: the **auto-round cap** bounds the autonomous tier (after which it hands off to the user), and an overall **max-rounds** cap bounds the whole loop. The loop ends when the evaluator reports full coverage *and* the user approves, the user explicitly stops, or max-rounds is hit.
+
+## Standalone CLI utilities
+
+Two commands operate on completed artefacts without starting a new research run.
+
+### `improve <slug>`
+
+Re-opens the evaluation/refinement loop on a **finished** run (`deepresearch improve <slug>`). The command patches the run's checkpoint to mark all sub-topics dirty and re-enter the evaluation loop, then presents the current report and coverage gaps via the normal hand-off interrupt. The user can accept the report as-is, describe changes (e.g. "expand the section on X"), or add new sub-topics. Research re-runs only if changes are requested; the same two-mode re-run and verification machinery applies. Motivations: extend a report after new sources become available, or deepen coverage in response to new requirements without starting over.
+
+### `prune [--dry-run]`
+
+Quality-gates every source currently in the Bibliography pool and removes garbage (`deepresearch prune`). The same two-phase source quality check used inline during research runs (heuristic pre-filter → LLM judgment) is applied to every `_sources/<id>.md` in batch. Sources that fail are deleted from the pool and their chunks removed from the Chroma index. `--dry-run` reports what would be deleted without touching files. Motivations: retroactively clean up pollution from older runs (before the source quality gate was active), or re-check the pool after changing quality thresholds. `QUALITY_GATE_ENABLED=false` disables the LLM phase; the heuristic phase always runs.
 
 ## Tech stack
 

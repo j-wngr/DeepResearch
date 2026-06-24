@@ -25,6 +25,7 @@ Terminology is from [CONTEXT.md](../CONTEXT.md); contracts and models are from [
 | 7 | Refinement loop (evaluate, two tiers, two-mode re-run) | 7 | shipped |
 | 8 | Acquisition UX (blocked-fetch interrupt, inbox round-trip) | 8 | shipped |
 | 9 | Hardening + **full end-to-end integration suite** | 9 | shipped |
+| 10 | Source quality gate, `improve`, `prune`, `--skip-acquire`, `--bibliography-only` | — | shipped |
 
 Status values:
 
@@ -241,6 +242,25 @@ Dependencies are mostly linear; Phases 1 and 2 can proceed in parallel after Pha
 
 ---
 
+## Phase 10 — Source quality gate, `improve`, `prune`, `--skip-acquire`, `--bibliography-only`
+
+**Goal.** Prevent pool pollution during research runs, provide retroactive pool cleanup, and give the user two new quality-of-life commands plus two acquisition-control flags.
+
+**Deliverables.**
+
+- `source_quality.py` — `assess(source_ref, bib_dir, state_dir)` two-phase check: (1) heuristic (`sources/quality.is_acceptable`) then (2) LLM `"quality"` role model. Verdicts cached at `state_dir/quality_cache.json` keyed by `source_id` (topic-agnostic). Garbage sources deleted from pool by caller.
+- **Inline subagent quality gate** (`nodes/subagent.py`) — after save, every newly fetched source is passed through `source_quality.assess()`. If garbage: delete pool file + skip to next candidate. Controlled by `quality_gate_enabled` configurable.
+- **`improve` command** (`cli.py`) — patches a finished run's checkpoint via `graph.update_state(as_node="writer")` setting `pending_handoff=True`, `user_approved=False`, `auto_round=0`, all sub-topics dirty; resumes graph from writer → evaluate interrupt.
+- **`prune [--dry-run]` command** (`cli.py`) — iterates `_sources/`, calls `assess()` on each, deletes failures from pool + Chroma, prints summary. `--dry-run` skips deletion.
+- **`--skip-acquire` / `--bibliography-only` flags** — wired to `config.skip_acquire_interrupt` and `config.bibliography_only`; accepted by `run` and `resume`.
+- LLM tier: `"quality"` role → `model_long` (same as `"gate"` / `"synth"`).
+
+**Exit criteria.** Garbage sources removed from pool during research; `prune` cleans up retroactively; `improve` re-enters evaluation loop on a finished run; `--skip-acquire` suppresses acquisition prompts; `--bibliography-only` disables web fetch.
+
+**Tests.** `tests/test_source_quality.py` (unit: heuristic, LLM, cache, JSON-parse error, missing-source safe-default) + integration (`test_quality_gate_inline_rejects_garbage_from_pool`). `tests/test_cli.py`: `test_improve_*` (state patch, missing-slug error, unfinished-run error) + `test_prune_*` (removes garbage, keeps quality, dry-run no-op, empty bibliography).
+
+---
+
 ## End-to-end integration testing
 
 The E2E suite drives the **compiled graph** through realistic runs using only fakes, asserting both outputs (files on disk) and invariants (citations, dedup, loop control). It is the acceptance gate for Phase 9 and the regression net thereafter.
@@ -302,6 +322,8 @@ Each invariant is owned by the phase that introduces it and re-checked in the E2
 | Acquisition ≠ editorial; batched | 8 | Phase 8 + Scenario C |
 | Failure isolation, no run abort | 9 | Scenario F |
 | Cross-run knowledge reuse | 1–2 | Scenario E |
+| Garbage sources purged from pool | 10 | `test_source_quality.py` + `test_cli.py::test_prune_*` |
+| `improve` re-enters loop on finished run | 10 | `test_cli.py::test_improve_*` |
 
 ## Definition of done (per phase)
 
