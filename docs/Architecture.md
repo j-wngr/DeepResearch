@@ -99,9 +99,12 @@ class SubAgentState(TypedDict):
     evidence: list[EvidenceExtract]    # compress: distilled, sub-topic-relevant quotes
     draft: str | None
     candidates: list[SourceRef]        # transient: raw body refs dropped after gate (trajectory compaction)
+    pending_acquisitions: list[AcquisitionRequest]  # batched blocked-fetch requests for the next interrupt
+    acquisition_gaps: list[str]        # permanent gaps ("source unobtainable: <url>"); skip on re-acquire
     subreport: SubReport | None        # emitted on quality-gate pass or cap-hit (with shortfall)
     quality_gate_result: QualityGateResult | None  # latest quality-gate verdict; drives loop/END
     subreports: dict[str, SubReport]   # pass-through channel for the parent state's subreports
+    isolated: bool                     # set by _with_isolation on hard failure; routes remaining nodes to END
 ```
 
 Note the deliberate **state-schema isolation** (§10): full document bodies never live in this state — only `SourceRef`s and distilled `EvidenceExtract`s do. The full markdown is loaded from the pool on demand (gate, final verification) and discarded.
@@ -166,7 +169,7 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
 - `embeddings.embed(texts) -> vectors` via Ollama (`mxbai-embed-large` default).
 - `store`: one global Chroma collection under `.deepresearch/chroma/`; `upsert(chunks)`, `query(text, k)`; chunk metadata: `source_id` (the canonical citation key, #5), `content_hash`, `source_path`, `source_url`, `title`, `type`, `super_topic`, `sub_topic`.
 - `index.ingest(source_ref)`: header-aware chunk (~1000/200) → embed → **upsert through the single serialized writer** (a process-wide lock/queue over one shared Chroma client; reads stay concurrent). Chunk ids are deterministic — `chunk_id = f(source_id, chunk_index)` — so upsert is idempotent and two subagents discovering the same source can't duplicate it. Called by the subagent immediately after a save, so siblings can retrieve it within the run.
-- `index.reconcile()`: inbox first (convert/dedup/fold drop-ins), then index un-indexed pool markdown. Runs once at `run`/`resume` startup **before** the supervisor fan-out (so it never overlaps subagent writes), and standalone via `research sync`.
+- `index.reconcile()`: inbox first (convert/dedup/fold drop-ins), then index pool markdown that is either new or whose `content_hash` has changed since it was last indexed (so a re-fetched web source with updated content is re-embedded, not silently stale). Runs once at `run`/`resume` startup **before** the supervisor fan-out (so it never overlaps subagent writes), and standalone via `research sync`.
 - `retrieve.candidates(query, super_slug)`: top-k → drop below absolute floor → re-rank with provenance boost for matching `super_topic` → dedup chunk hits to distinct `source_id`s.
 
 ### 6.2 Sources
@@ -277,5 +280,5 @@ The phased, test-gated expansion of this build order — with per-phase bringup 
 - `references.json` schema — a JSON list of `SourceRef` objects for the sources cited in the final report (written by `writer.py`).
 - Relevance cache/checkpointer storage — kept in separate files: `state_dir / checkpoints.sqlite` (LangGraph) and `state_dir / relevance_cache.json` (gate verdict cache).
 - Transient-error retry/backoff — a `retry.py` helper (`retry_call`) wraps the LLM and Tavily seams with bounded attempts (defaults: 3 / 0.5s initial / 2.0x backoff, tunable via `LLM_MAX_RETRIES`, `LLM_RETRY_INITIAL_INTERVAL`, `TAVILY_MAX_RETRIES`); the allow-list is narrow (transport-class errors only) so application/model errors are not retried.
-- Failure isolation — implemented as an in-subgraph `try/except` wrapper (`nodes/subagent.py::_isolating_subagent`) that re-raises `GraphInterrupt` (preserving the acquire interrupt) and converts other `Exception`s into an isolated `SubReport` with a citation-free shortfall and a per-sub `report.md` written to disk. Sibling sub-topics continue normally.
+- Failure isolation — each subagent node is wrapped with a `_with_isolation` decorator (`nodes/subagent.py`). The decorator re-raises `GraphInterrupt` unchanged (so LangGraph's interrupt/resume mechanism works correctly across parallel subagents) and converts any other `Exception` into an isolated `SubReport` with a citation-free shortfall and a per-sub `report.md` written to disk. Conditional edges after each node check `isolated=True` and route to `END`, so sibling sub-topics continue normally. This flat, single-compiled-subgraph structure (no nested `compiled.invoke()`) is required for the outer graph's checkpointer to manage all task state and for `CONFIG_KEY_RESUME_MAP` to propagate correctly to inner `interrupt()` calls.
 - `research list` / `research status` — `run_state.py` reads thread metadata from the SQLite checkpointer and per-run file presence from the outputs tree; the CLI commands render one `RunSummary` per thread (or a single summary for a slug) with `brief`/`report` presence, round counters, and `pending_handoff` state.
