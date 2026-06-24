@@ -14,8 +14,10 @@ def main(log_level: str = typer.Option("INFO", "--log-level", help="Logging leve
     from deepresearch.endpoints import resolve_ollama_endpoints
     from deepresearch.logging_setup import configure_logging
 
-    # Load the local .env before any command touches the config singleton.
-    cfg = Config.load_env()
+    # Search for .env relative to this file (project root), not cwd, so the
+    # CLI works regardless of where it is invoked from on a remote machine.
+    _env_file = Path(__file__).parent.parent.parent / ".env"
+    cfg = Config.load_env(_env_file if _env_file.exists() else ".env")
     configure_logging(log_level)
     # Fall back to a local Ollama when the configured hosts are unreachable
     # (e.g. a LAN host that is not on the current network).
