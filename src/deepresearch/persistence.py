@@ -1,25 +1,33 @@
 """Checkpointer factory."""
 
-import inspect
-import sqlite3
-from contextlib import closing, contextmanager
+import logging
+import re
 from pathlib import Path
 
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 
-def _model_allowlist() -> list[tuple[str, str]]:
-    """Return (module, class_name) tuples for every class in deepresearch.models."""
-    import deepresearch.models as _models
-    return [
-        (_models.__name__, name)
-        for name, obj in inspect.getmembers(_models, inspect.isclass)
-        if obj.__module__ == _models.__name__
-    ]
+def _suppress_model_deserialisation_warnings() -> None:
+    """Silence the 'unregistered type deepresearch.models.*' msgpack warning.
+
+    LangGraph warns about every custom type not in its built-in allowlist. All
+    deepresearch.models types are safe — we own them.  Rather than passing a
+    restrictive allowed_msgpack_modules list (which blocks other types and
+    breaks checkpoint reads), we filter the warning at the logger level.
+    """
+
+    class _Filter(logging.Filter):
+        _pat = re.compile(r"Deserializing unregistered type deepresearch\.")
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            return not self._pat.search(record.getMessage())
+
+    logging.getLogger("langgraph.checkpoint.serde.jsonplus").addFilter(_Filter())
 
 
-@contextmanager
+_suppress_model_deserialisation_warnings()
+
+
 def create_checkpointer(state_dir: Path):
     """Create a SQLite-backed LangGraph checkpointer context manager.
 
@@ -29,8 +37,4 @@ def create_checkpointer(state_dir: Path):
     """
     db_path = state_dir / "checkpoints.sqlite"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    serde = JsonPlusSerializer(allowed_msgpack_modules=_model_allowlist())
-    with closing(
-        sqlite3.connect(str(db_path), check_same_thread=False)
-    ) as conn:
-        yield SqliteSaver(conn, serde=serde)
+    return SqliteSaver.from_conn_string(str(db_path))
