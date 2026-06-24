@@ -199,7 +199,7 @@ def reconcile(
     inbox_reconcile(bibliography_dir, pdf_converter=pdf_converter)
 
     sources_dir = bibliography_dir / "_sources"
-    indexed = store.list_source_ids()
+    stored_hashes = store.list_source_hashes()
     newly_indexed = 0
 
     if not sources_dir.exists():
@@ -207,8 +207,17 @@ def reconcile(
 
     for md_file in sorted(sources_dir.glob("*.md")):
         source_id = md_file.stem
-        if source_id in indexed:
-            continue
+
+        # Read the source ref to get the current content_hash (may fail for
+        # legacy or malformed sources; fall back to empty string so they get indexed).
+        try:
+            source_ref = pool.get_ref(source_id, bibliography_dir)
+            current_hash = source_ref.content_hash
+        except Exception:  # noqa: BLE001
+            current_hash = ""
+
+        if source_id in stored_hashes and stored_hashes[source_id] == current_hash:
+            continue  # already indexed and content unchanged
 
         # Strip frontmatter to match the gate's grounding (see ``ingest``).
         text = pool.get(source_id, bibliography_dir)
@@ -224,7 +233,7 @@ def reconcile(
             chunk["metadata"] = _enrich_metadata(
                 chunk,
                 source_id=source_id,
-                content_hash="",
+                content_hash=current_hash,
                 source_path=f"_sources/{source_id}.md",
                 source_url="",
                 title=md_file.name,

@@ -132,31 +132,35 @@ def judge(
     key = _cache_key(super_slug, sub.slug, source_ref.id)
     cache_path = _cache_path(state_dir)
 
+    # Phase 1: cache read (lock held briefly, no I/O beyond the JSON file)
     with _CACHE_LOCK:
         cache = _load_cache(cache_path)
         cached = cache.get(key)
-        if cached is not None:
-            return Verdict.model_validate(cached)
+    if cached is not None:
+        return Verdict.model_validate(cached)
 
-        markdown = pool_get(source_ref.id, bibliography_dir)
-        cap = get_config().doc_size_cap
-        if len(markdown) > cap:
-            logger.warning(
-                "Document %s exceeds doc_size_cap (%d > %d); truncating.",
-                source_ref.id,
-                len(markdown),
-                cap,
-            )
-            markdown = markdown[:cap]
+    # Phase 2: load document and call LLM (no lock — allows parallel judgments)
+    markdown = pool_get(source_ref.id, bibliography_dir)
+    cap = get_config().doc_size_cap
+    if len(markdown) > cap:
+        logger.warning(
+            "Document %s exceeds doc_size_cap (%d > %d); truncating.",
+            source_ref.id,
+            len(markdown),
+            cap,
+        )
+        markdown = markdown[:cap]
 
-        prompt = _build_prompt(sub, markdown)
-        response = chat_fn("gate", [{"role": "user", "content": prompt}])
+    prompt = _build_prompt(sub, markdown)
+    response = chat_fn("gate", [{"role": "user", "content": prompt}])
+    verdict = _parse_response(response, super_slug, sub.slug, source_ref.id)
 
-        verdict = _parse_response(response, super_slug, sub.slug, source_ref.id)
+    # Phase 3: cache write (lock held briefly; re-read to merge concurrent writes)
+    if verdict.reason != "LLM response parse error":
+        with _CACHE_LOCK:
+            cache = _load_cache(cache_path)
+            if key not in cache:
+                cache[key] = verdict.model_dump()
+                _save_cache(cache_path, cache)
 
-        # Only successful parses are cached; parse-error verdicts are left transient.
-        if verdict.reason != "LLM response parse error":
-            cache[key] = verdict.model_dump()
-            _save_cache(cache_path, cache)
-
-        return verdict
+    return verdict

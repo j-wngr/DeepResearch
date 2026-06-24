@@ -129,9 +129,7 @@ def _score_coverage(state: ResearchState, config: RunnableConfig) -> tuple[float
             f"Whitelisted sources:\n---\n{sources_text}\n---\n\n"
             'Return JSON: {"per_question": [{"subtopic_slug": "...", "question": "...", '
             '"status": "answered"|"partial"|"unanswered", "supported": true|false}], '
-            '"gaps": ["..."], "followups": [{"slug":"...","title":"...",'
-            '"scope":"...","guiding_questions":["..."]}], "queued_additions": [...], '
-            '"coverage_score": 0.0-1.0, "fully_covered": true|false}'
+            '"gaps": ["..."]}'
         )
         raw = chat_fn("eval", [{"role": "user", "content": prompt}])
         if raw == "":

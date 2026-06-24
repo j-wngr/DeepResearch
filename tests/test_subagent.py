@@ -653,7 +653,7 @@ def test_fetch_skips_empty_web_extract(tmp_workspace):
     hit = SearchHit(url=url, title="Paywalled", snippet="")
     fake_tavily = FakeTavily(extracts={})  # extract(url) -> ""
 
-    result = _fetch_from_search_hit(hit, bib_dir, store, embeddings, fake_tavily, None)
+    result = _fetch_from_search_hit(hit, bib_dir, fake_tavily, None)
 
     assert result is None
     assert not (bib_dir / "_sources" / f"{hash_url(url)}.md").exists()

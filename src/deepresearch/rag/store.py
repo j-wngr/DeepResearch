@@ -79,6 +79,22 @@ class ChromaStore:
                 source_ids.add(sid)
         return source_ids
 
+    def list_source_hashes(self) -> dict[str, str]:
+        """Return the stored ``content_hash`` for each distinct source_id.
+
+        Only the first chunk seen per source_id is used (all chunks for a source
+        share the same hash). Sources indexed before this field was tracked will
+        have an empty string, which always differs from the file's real hash and
+        therefore triggers a re-index on the next reconcile.
+        """
+        data = self._collection.get(include=["metadatas"])
+        hashes: dict[str, str] = {}
+        for meta in data["metadatas"]:
+            sid = meta.get("source_id")
+            if sid and sid not in hashes:
+                hashes[sid] = meta.get("content_hash", "")
+        return hashes
+
     def delete(self, source_id: str) -> None:
         """Remove all chunks for ``source_id`` from the collection."""
         with self._write_lock:

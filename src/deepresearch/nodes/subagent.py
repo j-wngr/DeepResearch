@@ -8,6 +8,7 @@ back to acquire (bounded by `subagent_max_iterations`); cap hit emits with
 a `shortfall` flag.
 """
 
+import functools
 import json
 import logging
 from collections.abc import Callable
@@ -111,6 +112,14 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
     pending_ids = {req.source_id for req in pending_acquisitions}
     retrieve_fn = configurable.get("retrieve_fn")
 
+    # Skip sources already declared unobtainable in previous iterations.
+    unobtainable_ids: set[str] = set()
+    for gap in state.get("acquisition_gaps", []):
+        if gap.startswith("source unobtainable: "):
+            url = gap.removeprefix("source unobtainable: ")
+            from deepresearch.paths import hash_url
+            unobtainable_ids.add(hash_url(url))
+
     queries = _build_queries(sub, state["scratchpad"])
     if not queries:
         queries = [sub.title]
@@ -147,13 +156,11 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
             hits = web.search(query, tavily_client)
             for hit in hits:
                 source_id = _source_id_from_hit(hit)
-                if source_id in seen_ids or source_id in whitelisted_ids:
+                if source_id in seen_ids or source_id in whitelisted_ids or source_id in unobtainable_ids:
                     continue
                 source_ref = _fetch_from_search_hit(
                     hit,
                     bibliography_dir,
-                    store,
-                    embeddings,
                     tavily_client,
                     pdf_client,
                     super_topic=super_slug,
@@ -239,8 +246,6 @@ def _source_id_from_hit(hit: SearchHit) -> str:
 def _fetch_from_search_hit(
     hit: SearchHit,
     bibliography_dir: Path,
-    store,
-    embeddings,
     tavily_client,
     pdf_client,
     super_topic: str = "",
@@ -315,7 +320,6 @@ def _gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
 
     from deepresearch import gate
     from deepresearch.rag import index as rag_index
-    from deepresearch.sources import pool
 
     sub = state["subtopic"]
     super_slug = state["slug"]
@@ -345,12 +349,10 @@ def _gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
             evidence.append(verdict.evidence)
         else:
             logger.info(
-                "Gate rejected %s (%s); removing from pool",
+                "Gate rejected %s (%s); skipping",
                 candidate.id,
                 verdict.reason,
             )
-            pool.remove(candidate.id, bibliography_dir)
-            store.delete(candidate.id)
 
     return {"whitelisted": whitelisted, "evidence": evidence, "candidates": []}
 
@@ -496,7 +498,7 @@ def _quality_gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
         # Also emit to parent's subreports channel (keyed by subtopic slug)
         # so the merge_subreports reducer accumulates results from all subagents.
         updates["subreports"] = {sub.slug: subreport}
-    elif gaps and not state.get("candidates"):
+    elif gaps:
         shortfall = _shortfall_with_gaps(result.reason, gaps)
         body = _append_gap_paragraph(draft, gaps)
         subreport = SubReport(
@@ -640,49 +642,70 @@ def _route_after_quality_gate(state: SubAgentState) -> str:
     return "end"
 
 
-def _build_inner_subagent_subgraph(checkpointer=None):
-    """Build and compile the unsafe inner subagent subgraph."""
-    builder = StateGraph(SubAgentState)
+def _with_isolation(fn):
+    """Wrap a node with failure isolation.
 
-    builder.add_node("plan", _plan_node)
-    builder.add_node("acquire", _acquire_node)
-    builder.add_node("gate", _gate_node)
-    builder.add_node("reflect", _reflect_node)
-    builder.add_node("synthesize", _synthesize_node)
-    builder.add_node("quality_gate", _quality_gate_node)
+    GraphInterrupt is re-raised so LangGraph's interrupt/resume mechanism works
+    correctly across parallel subagents. All other exceptions produce an isolated
+    fallback state so one failing subtopic doesn't abort the whole run.
+    """
+    @functools.wraps(fn)
+    def wrapper(state: SubAgentState, config: RunnableConfig) -> dict:
+        try:
+            return fn(state, config)
+        except GraphInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            return _build_isolated_state(state, exc, config)
+    return wrapper
 
-    builder.add_edge(START, "plan")
-    builder.add_edge("plan", "acquire")
-    builder.add_edge("acquire", "gate")
-    builder.add_edge("gate", "reflect")
-    builder.add_edge("reflect", "synthesize")
-    builder.add_edge("synthesize", "quality_gate")
-    builder.add_conditional_edges(
-        "quality_gate",
-        _route_after_quality_gate,
-        {"loop": "acquire", "end": END},
-    )
 
-    return builder.compile(checkpointer=checkpointer)
+def _continue_or_end(next_node: str):
+    """Return a router: END if isolated, else next_node."""
+    def route(state: SubAgentState) -> str:
+        return "end" if state.get("isolated") else next_node
+    return route
+
+
+def _route_quality_gate(state: SubAgentState) -> str:
+    if state.get("isolated"):
+        return "end"
+    action = _route_after_quality_gate(state)
+    return "acquire" if action == "loop" else "end"
 
 
 def build_subagent_subgraph(checkpointer=None):
-    """Build the subagent subgraph wrapped with failure isolation."""
-    compiled = _build_inner_subagent_subgraph(checkpointer=checkpointer)
+    """Build the subagent as a flat compiled subgraph with node-level isolation.
 
-    def _isolating_subagent(state: SubAgentState, config: RunnableConfig) -> dict:
-        try:
-            result = compiled.invoke(state, config)
-            if isinstance(result, dict):
-                result.setdefault("isolated", False)
-            return result
-        except GraphInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 - isolation boundary catches all hard failures.
-            return _build_isolated_state(state, exc, config)
+    Each node is wrapped with ``_with_isolation`` so exceptions in individual
+    nodes return an isolated fallback rather than crashing the whole run.
+    Conditional edges after each node route to END when ``isolated=True``.
 
+    This flat structure (no nested ``compiled.invoke()``) is required for
+    LangGraph's interrupt/resume mechanism to work correctly when multiple
+    parallel subtopic subagents interrupt simultaneously — the outer graph's
+    checkpointer must manage all task state, which only works when the subgraph
+    nodes are first-class citizens of the same execution context.
+    """
     builder = StateGraph(SubAgentState)
-    builder.add_node("research_subagent", _isolating_subagent)
-    builder.add_edge(START, "research_subagent")
-    builder.add_edge("research_subagent", END)
+
+    builder.add_node("plan", _with_isolation(_plan_node))
+    builder.add_node("acquire", _with_isolation(_acquire_node))
+    builder.add_node("gate", _with_isolation(_gate_node))
+    builder.add_node("reflect", _with_isolation(_reflect_node))
+    builder.add_node("synthesize", _with_isolation(_synthesize_node))
+    builder.add_node("quality_gate", _with_isolation(_quality_gate_node))
+
+    builder.add_edge(START, "plan")
+    builder.add_conditional_edges("plan", _continue_or_end("acquire"), {"acquire": "acquire", "end": END})
+    builder.add_conditional_edges("acquire", _continue_or_end("gate"), {"gate": "gate", "end": END})
+    builder.add_conditional_edges("gate", _continue_or_end("reflect"), {"reflect": "reflect", "end": END})
+    builder.add_conditional_edges("reflect", _continue_or_end("synthesize"), {"synthesize": "synthesize", "end": END})
+    builder.add_conditional_edges("synthesize", _continue_or_end("quality_gate"), {"quality_gate": "quality_gate", "end": END})
+    builder.add_conditional_edges(
+        "quality_gate",
+        _route_quality_gate,
+        {"acquire": "acquire", "end": END},
+    )
+
     return builder.compile(checkpointer=checkpointer)
