@@ -320,6 +320,12 @@ def resume(
             typer.echo(f"No run found for slug: {slug}")
             raise typer.Exit(1)
 
+        # Check if the run is already finished
+        if not current_state.next:
+            typer.echo(f"Run '{slug}' is already finished.")
+            typer.echo(f"Use 'improve {slug}' to re-open the evaluation loop.")
+            raise typer.Exit(0)
+
         # Collect resume input and continue
         resume_value = _collect_resume_input(current_state)
         _run_interactive(graph, Command(resume=resume_value), config)
@@ -396,12 +402,11 @@ def improve(slug: str) -> None:
             typer.echo(f"No run found for slug: {slug}")
             raise typer.Exit(1)
 
-        values = current_state.values
-        if not values.get("user_approved"):
+        if current_state.next:
             typer.echo("Run is not yet finished. Use 'resume' instead.")
             raise typer.Exit(1)
 
-        brief = values.get("brief")
+        brief = current_state.values.get("brief")
         if brief is None:
             typer.echo("No brief found; cannot improve.")
             raise typer.Exit(1)
