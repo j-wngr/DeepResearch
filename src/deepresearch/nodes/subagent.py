@@ -36,7 +36,7 @@ from deepresearch.models import (
     SubTopic,
 )
 from deepresearch.paths import output_path
-from deepresearch.sources import quality
+
 from deepresearch.state import SubAgentState
 
 logger = logging.getLogger("deepresearch.nodes.subagent")
@@ -290,19 +290,6 @@ def _fetch_from_search_hit(
             # be saved -- an empty-body source is retrieved by RAG yet rejected
             # by the gate, and it suppresses the web-search gap-fill.
             logger.warning("Empty extract for %s; skipping", hit.url)
-            return None
-        cfg = get_config()
-        if not quality.is_acceptable(
-            markdown,
-            min_words=cfg.min_source_words,
-            max_link_density=cfg.max_link_density,
-        ):
-            logger.warning(
-                "Low-quality extract for %s (words=%d, link_density=%.2f); skipping",
-                hit.url,
-                quality.word_count(markdown),
-                quality.link_density(markdown),
-            )
             return None
         source_ref = pool.save_web(markdown, hit.url, hit.title, bibliography_dir)
 
