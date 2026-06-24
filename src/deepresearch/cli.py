@@ -99,9 +99,8 @@ def _display_interrupt(data):
         typer.echo(str(data))
 
 
-def _collect_acquire_responses(requests: list[dict]) -> list[dict]:
-    """Wait for user confirmation, then auto-detect which inbox files are present."""
-    typer.prompt("\nPress Enter when ready", default="", show_default=False)
+def _check_acquire_files(requests: list[dict]) -> list[dict]:
+    """Check which requested files are present and return per-request responses (no prompt)."""
     responses = []
     found = []
     missing = []
@@ -119,14 +118,56 @@ def _collect_acquire_responses(requests: list[dict]) -> list[dict]:
     return responses
 
 
+def _collect_acquire_responses(requests: list[dict]) -> list[dict]:
+    """Wait for user confirmation, then auto-detect which inbox files are present."""
+    typer.prompt("\nPress Enter when ready", default="", show_default=False)
+    return _check_acquire_files(requests)
+
+
+def _build_resume_value(interrupts):
+    """Collect user responses for pending interrupts.
+
+    Returns a plain value for a single interrupt, or a {id: value} dict for
+    multiple interrupts (required by LangGraph when len(pending) > 1).
+    """
+    all_acquire = all(iv.value.get("type") == "acquire" for iv in interrupts)
+
+    if len(interrupts) == 1:
+        iv = interrupts[0]
+        if iv.value.get("type") == "acquire":
+            return _collect_acquire_responses(iv.value.get("requests", []))
+        return typer.prompt("\nYour response")
+
+    # Multiple pending interrupts — LangGraph requires a {interrupt_id: value} mapping.
+    if all_acquire:
+        # Aggregate all requests so the user only has to press Enter once.
+        all_requests = []
+        for iv in interrupts:
+            all_requests.extend(iv.value.get("requests", []))
+        typer.prompt("\nPress Enter when ready", default="", show_default=False)
+        # Build per-interrupt response dicts from the single file-presence check.
+        resume_map = {}
+        for iv in interrupts:
+            resume_map[iv.id] = _check_acquire_files(iv.value.get("requests", []))
+        return resume_map
+
+    resume_map = {}
+    for iv in interrupts:
+        if iv.value.get("type") == "acquire":
+            resume_map[iv.id] = _collect_acquire_responses(iv.value.get("requests", []))
+        else:
+            resume_map[iv.id] = typer.prompt("\nYour response")
+    return resume_map
+
+
 def _collect_resume_input(current_state):
-    """Display the pending interrupt and collect user input."""
+    """Display the pending interrupt(s) and collect user input."""
     interrupts = current_state.interrupts if hasattr(current_state, "interrupts") else []
     for interrupt_data in interrupts:
         _display_interrupt(interrupt_data.value)
-    if interrupts and interrupts[0].value.get("type") == "acquire":
-        return _collect_acquire_responses(interrupts[0].value.get("requests", []))
-    return typer.prompt("\nYour response")
+    if not interrupts:
+        return typer.prompt("\nYour response")
+    return _build_resume_value(interrupts)
 
 
 def _run_interactive(graph, input_state, config):
@@ -143,10 +184,7 @@ def _run_interactive(graph, input_state, config):
             return result
         for interrupt_data in interrupts:
             _display_interrupt(interrupt_data.value)
-        if interrupts and interrupts[0].value.get("type") == "acquire":
-            user_input = _collect_acquire_responses(interrupts[0].value.get("requests", []))
-        else:
-            user_input = typer.prompt("\nYour response")
+        user_input = _build_resume_value(interrupts)
         current_input = Command(resume=user_input)
 
 
