@@ -112,6 +112,7 @@ def _run_subagent_with_subtopic(
     fake_tavily: FakeTavily | None = None,
     fake_pdf: FakePdf | None = None,
     retrieve_fn=None,
+    extra_configurable: dict | None = None,
 ) -> dict:
     from deepresearch.rag.store import ChromaStore
 
@@ -140,6 +141,7 @@ def _run_subagent_with_subtopic(
             "bibliography_dir": str(bibliography_dir),
             "state_dir": str(state_dir),
             "output_dir": str(output_dir),
+            **(extra_configurable or {}),
         }
     }
     if retrieve_fn is not None:
@@ -635,6 +637,122 @@ def test_quality_gate_cannot_pass_without_evidence(tmp_workspace, monkeypatch):
     assert subreport is not None
     assert subreport.shortfall  # not a clean pass
     assert subreport.citations == []
+
+
+@pytest.mark.integration
+def test_skip_acquire_interrupt_skips_blocked_pdfs(tmp_workspace, monkeypatch):
+    """With skip_acquire_interrupt=True, blocked PDFs are auto-marked unobtainable
+    without raising a GraphInterrupt; the gap is recorded and the run finishes."""
+    monkeypatch.setenv("SIMILARITY_FLOOR", "0.0")
+    monkeypatch.setenv("SUBAGENT_MAX_ITERATIONS", "1")
+    reset_config()
+
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    out_dir = tmp_workspace["output_dir"]
+    embeddings = FakeEmbeddings()
+
+    # RAG returns nothing, forcing a web search on the first pass.
+    blocked_pdf_url = "https://paywalled.example.com/paper.pdf"
+    fake_tavily = FakeTavily(
+        search_results={
+            "intermittent fasting": [
+                SearchHit(url=blocked_pdf_url, title="Blocked Paper", snippet="snippet")
+            ],
+            "insulin sensitivity": [
+                SearchHit(url=blocked_pdf_url, title="Blocked Paper", snippet="snippet")
+            ],
+        }
+    )
+    fake_pdf = FakePdf(blocked_urls={blocked_pdf_url})
+
+    fake_chat = FakeChat(
+        {
+            "synth": [
+                "Reflect 1",
+                "Draft with no citations.",
+                _quality_gate_response(False, "no sources"),
+                "Reflect 2",
+                "Draft with no citations.",
+                _quality_gate_response(False, "still no sources"),
+            ],
+        }
+    )
+
+    result = _run_subagent_with_subtopic(
+        bib_dir,
+        state_dir,
+        out_dir,
+        embeddings,
+        fake_chat,
+        _subtopic(),
+        fake_tavily,
+        fake_pdf,
+        retrieve_fn=lambda query, slug: [],
+        extra_configurable={"skip_acquire_interrupt": True},
+    )
+
+    assert result["subreport"] is not None
+    assert any(
+        "source unobtainable" in gap and blocked_pdf_url in gap
+        for gap in result["acquisition_gaps"]
+    )
+
+
+@pytest.mark.integration
+def test_bibliography_only_skips_web_search(tmp_workspace, monkeypatch):
+    """With bibliography_only=True, web searches are never run even when RAG
+    yields no candidates; the run finishes with a shortfall instead of searching."""
+    monkeypatch.setenv("SIMILARITY_FLOOR", "0.0")
+    monkeypatch.setenv("SUBAGENT_MAX_ITERATIONS", "1")
+    reset_config()
+
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    out_dir = tmp_workspace["output_dir"]
+    embeddings = FakeEmbeddings()
+
+    fake_tavily = FakeTavily(
+        search_results={
+            "intermittent fasting": [
+                SearchHit(
+                    url="https://example.com/web-source",
+                    title="Web Source",
+                    snippet="Web content snippet",
+                )
+            ]
+        },
+        extracts={"https://example.com/web-source": "Web content about fasting."},
+    )
+
+    fake_chat = FakeChat(
+        {
+            "synth": [
+                "Reflect 1",
+                "Draft with no citations.",
+                _quality_gate_response(False, "no sources"),
+                "Reflect 2",
+                "Draft with no citations.",
+                _quality_gate_response(False, "still no sources"),
+            ],
+        }
+    )
+
+    result = _run_subagent_with_subtopic(
+        bib_dir,
+        state_dir,
+        out_dir,
+        embeddings,
+        fake_chat,
+        _subtopic(),
+        fake_tavily,
+        retrieve_fn=lambda query, slug: [],
+        extra_configurable={"bibliography_only": True},
+    )
+
+    assert fake_tavily.search_count() == 0
+    assert result["subreport"] is not None
+    assert result["subreport"].shortfall
 
 
 @pytest.mark.unit

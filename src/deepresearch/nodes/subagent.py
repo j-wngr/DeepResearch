@@ -147,11 +147,12 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
     # returning the same already-rejected candidates, so we must supplement with
     # a web search whenever too few sources have actually been whitelisted --
     # otherwise a pool holding a single off-topic source starves every sub-topic.
+    bibliography_only = configurable.get("bibliography_only", False)
     target = get_config().min_sources_per_subtopic
     need_web = (not candidates) or (
         state["iteration"] > 0 and len(whitelisted_ids) < target
     )
-    if need_web and tavily_client is not None:
+    if need_web and tavily_client is not None and not bibliography_only:
         for query in queries:
             hits = web.search(query, tavily_client)
             for hit in hits:
@@ -182,6 +183,13 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
                 candidates.append(source_ref)
 
     if pending_acquisitions:
+        if configurable.get("skip_acquire_interrupt", False):
+            gaps = list(state.get("acquisition_gaps", []))
+            for request in pending_acquisitions:
+                logger.info("skip_acquire_interrupt: skipping blocked source %s", request.url)
+                gaps.append(f"source unobtainable: {request.url}")
+            return {"candidates": candidates, "pending_acquisitions": [], "acquisition_gaps": gaps}
+
         resume_value = interrupt(
             {
                 "type": "acquire",

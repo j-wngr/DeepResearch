@@ -56,6 +56,8 @@ Key settings:
 | `BIBLIOGRAPHY_DIR` | Where gathered sources are stored (default: `./Bibliography`) |
 | `OUTPUT_DIR` | Where briefs and reports are written (default: `./research`) |
 | `MAX_CONCURRENCY` | Parallel sub-topic agents (tune to your Ollama server) |
+| `SKIP_ACQUIRE_INTERRUPT` | `true` — silently skip blocked sources instead of pausing for a manual download |
+| `BIBLIOGRAPHY_ONLY` | `true` — use only sources already in the Bibliography; skip all web searches |
 
 ## Usage
 
@@ -75,6 +77,23 @@ The tool will:
 - Present the final report for your approval
 
 The report is saved to `research/<slug>/report.md`.
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--skip-acquire` | Skip the manual-download interrupt; treat all blocked sources as unobtainable and continue automatically. |
+| `--bibliography-only` | Use only sources already present in the Bibliography (RAG retrieval only); skip all web searches and PDF fetches. |
+
+```bash
+# Skip any paywalled PDFs without stopping to ask
+uv run deepresearch run "..." --skip-acquire
+
+# Only synthesise from sources you already have
+uv run deepresearch run "..." --bibliography-only
+```
+
+Both flags are also accepted by `resume` and can be set persistently via env vars (`SKIP_ACQUIRE_INTERRUPT=true`, `BIBLIOGRAPHY_ONLY=true`).
 
 ### Pause a run
 
@@ -186,6 +205,8 @@ Press Enter when ready >
 Save the file to the path shown, then press Enter — the run detects it automatically and continues. If you can't obtain a source, just press Enter without saving; it will be marked unobtainable and skipped.
 
 If you `Ctrl+C` before pressing Enter, resume with `deepresearch resume <slug>` and the same prompt will reappear.
+
+To skip the prompt entirely and treat all blocked sources as unobtainable automatically, pass `--skip-acquire` to `run` or `resume`.
 
 ## Output structure
 

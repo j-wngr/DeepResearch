@@ -24,7 +24,7 @@ def main(log_level: str = typer.Option("INFO", "--log-level", help="Logging leve
     resolve_ollama_endpoints(cfg)
 
 
-def _build_configurable(cfg):
+def _build_configurable(cfg, *, skip_acquire_interrupt: bool = False, bibliography_only: bool = False):
     """Build the configurable dict for graph invocation."""
     from langchain_ollama import OllamaEmbeddings as LCOllamaEmbeddings
     from tavily import TavilyClient
@@ -41,6 +41,10 @@ def _build_configurable(cfg):
     embeddings = LCOllamaEmbeddings(**embeddings_kwargs)
     store = ChromaStore(cfg.state_dir, embeddings.embed_query)
 
+    # bibliography_only implies skip_acquire_interrupt: no web fetches means no
+    # blocked sources, but be explicit so the node logic stays simple.
+    effective_skip = skip_acquire_interrupt or bibliography_only
+
     return {
         "chat_fn": chat,
         "embeddings": embeddings,
@@ -52,6 +56,8 @@ def _build_configurable(cfg):
         "bibliography_dir": str(cfg.bibliography_dir),
         "state_dir": str(cfg.state_dir),
         "output_dir": str(cfg.output_dir),
+        "skip_acquire_interrupt": effective_skip,
+        "bibliography_only": bibliography_only,
     }
 
 
@@ -202,7 +208,19 @@ def _run_interactive(graph, input_state, config):
 
 
 @app.command()
-def run(question: str) -> None:
+def run(
+    question: str,
+    skip_acquire: bool = typer.Option(
+        False,
+        "--skip-acquire",
+        help="Skip the manual-download interrupt; treat all blocked sources as unobtainable.",
+    ),
+    bibliography_only: bool = typer.Option(
+        False,
+        "--bibliography-only",
+        help="Use only sources already in the Bibliography; skip all web searches and PDF fetches.",
+    ),
+) -> None:
     """Start a new research run."""
     from deepresearch.config import get_config
     from deepresearch.endpoints import check_embed_model
@@ -243,15 +261,32 @@ def run(question: str) -> None:
             "user_approved": False,
         }
 
+        configurable = _build_configurable(
+            cfg,
+            skip_acquire_interrupt=skip_acquire or cfg.skip_acquire_interrupt,
+            bibliography_only=bibliography_only or cfg.bibliography_only,
+        )
         config = {
-            "configurable": {**_build_configurable(cfg), "thread_id": run_slug},
+            "configurable": {**configurable, "thread_id": run_slug},
         }
 
         _run_interactive(graph, initial_state, config)
 
 
 @app.command()
-def resume(slug: str) -> None:
+def resume(
+    slug: str,
+    skip_acquire: bool = typer.Option(
+        False,
+        "--skip-acquire",
+        help="Skip the manual-download interrupt; treat all blocked sources as unobtainable.",
+    ),
+    bibliography_only: bool = typer.Option(
+        False,
+        "--bibliography-only",
+        help="Use only sources already in the Bibliography; skip all web searches and PDF fetches.",
+    ),
+) -> None:
     """Resume an interrupted research run."""
     from langgraph.types import Command
 
@@ -269,8 +304,13 @@ def resume(slug: str) -> None:
     with create_checkpointer(cfg.state_dir) as checkpointer:
         graph = build_graph(checkpointer=checkpointer)
 
+        configurable = _build_configurable(
+            cfg,
+            skip_acquire_interrupt=skip_acquire or cfg.skip_acquire_interrupt,
+            bibliography_only=bibliography_only or cfg.bibliography_only,
+        )
         config = {
-            "configurable": {**_build_configurable(cfg), "thread_id": slug},
+            "configurable": {**configurable, "thread_id": slug},
         }
 
         # Check if a run exists

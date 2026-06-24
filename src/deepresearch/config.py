@@ -60,6 +60,12 @@ class Config:
         self.tavily_max_retries = self._get_int("TAVILY_MAX_RETRIES", 3)
         self.tavily_retry_initial_interval = self._get_float("TAVILY_RETRY_INITIAL_INTERVAL", 1.0)
         self.tavily_request_delay = self._get_float("TAVILY_REQUEST_DELAY", 1.0)
+        # When True, blocked PDF acquisitions are silently skipped instead of
+        # raising an interrupt that pauses the run for manual download.
+        self.skip_acquire_interrupt = self._get_bool("SKIP_ACQUIRE_INTERRUPT", False)
+        # When True, only sources already present in the Bibliography are used;
+        # web searches and PDF fetches are skipped entirely.
+        self.bibliography_only = self._get_bool("BIBLIOGRAPHY_ONLY", False)
 
     @classmethod
     def get(cls, env_file: Path | str | None = None) -> "Config":
@@ -90,6 +96,13 @@ class Config:
     def _get_float(key: str, default: float) -> float:
         value = os.environ.get(key)
         return float(value) if value is not None else default
+
+    @staticmethod
+    def _get_bool(key: str, default: bool) -> bool:
+        value = os.environ.get(key)
+        if value is None:
+            return default
+        return value.lower() not in ("0", "false", "no", "")
 
     @staticmethod
     def _get_path(key: str, default: str) -> Path:
