@@ -95,6 +95,20 @@ def _display_interrupt(data):
             typer.echo(f"  [{idx}] {request.get('title', '')}  {request.get('url', '')}")
             typer.echo(f"      save as: {request.get('save_path', '')}")
         typer.echo("\nDownload each file and save it to the path shown above, then press Enter.")
+    elif interrupt_type == "evaluate":
+        report_path = data.get("report_path", "")
+        round_n = data.get("round", 0)
+        coverage = data.get("coverage") or {}
+        typer.echo(f"\nRound {round_n} report is ready for review.")
+        typer.echo(f"Report: {report_path}")
+        gaps = coverage.get("gaps", [])
+        if gaps:
+            typer.echo("\nIdentified gaps:")
+            for gap in gaps:
+                typer.echo(f"  - {gap}")
+        else:
+            typer.echo("\nNo coverage gaps identified.")
+        typer.echo("\nReview the report, then type 'approve' to finish or describe changes you want.")
     else:
         typer.echo(str(data))
 
