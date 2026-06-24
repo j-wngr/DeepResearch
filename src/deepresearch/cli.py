@@ -173,7 +173,11 @@ def _collect_resume_input(current_state):
     for interrupt_data in interrupts:
         _display_interrupt(interrupt_data.value)
     if not interrupts:
-        return typer.prompt("\nYour response")
+        # No visible interrupts but the checkpoint may have hidden pending writes
+        # (tasks whose INTERRUPT write isn't surfaced by get_state).  An empty
+        # dict sets resume_is_map=True in LangGraph, bypassing the pending-count
+        # check and letting those tasks re-fire on the next tick.
+        return {}
     return _build_resume_value(interrupts)
 
 
