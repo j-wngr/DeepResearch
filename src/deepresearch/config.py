@@ -30,6 +30,9 @@ class Config:
         self.model_long = self._get_str("MODEL_LONG", "llama3.2:3b")
         self.model_writer = self._get_str("MODEL_WRITER", "llama3.2:3b")
         self.embed_model = self._get_str("EMBED_MODEL", "mxbai-embed-large")
+        self.pdf_converter = self._get_str("PDF_CONVERTER", "pymupdf")
+        self.pdf_converter_url = self._get_str("PDF_CONVERTER_URL", "")
+        self.pdf_converter_api_key = self._get_str("PDF_CONVERTER_API_KEY", "")
         self.tavily_api_key = self._get_str("TAVILY_API_KEY", "")
         self.bibliography_dir = self._get_path("BIBLIOGRAPHY_DIR", "./Bibliography")
         self.output_dir = self._get_path("OUTPUT_DIR", "./research")
@@ -48,11 +51,14 @@ class Config:
         self.similarity_floor = self._get_float("SIMILARITY_FLOOR", 0.5)
         self.provenance_boost = self._get_float("PROVENANCE_BOOST", 0.05)
         self.doc_size_cap = self._get_int("DOC_SIZE_CAP", 50000)
+        self.min_source_words = self._get_int("MIN_SOURCE_WORDS", 150)
+        self.max_link_density = self._get_float("MAX_LINK_DENSITY", 0.5)
         self.writer_max_revisions = self._get_int("WRITER_MAX_REVISIONS", 3)
         # Bounded transient dependency retries: 3 attempts, 0.5s initial, 2x backoff.
         self.llm_max_retries = self._get_int("LLM_MAX_RETRIES", 3)
         self.llm_retry_initial_interval = self._get_float("LLM_RETRY_INITIAL_INTERVAL", 0.5)
         self.tavily_max_retries = self._get_int("TAVILY_MAX_RETRIES", 3)
+        self.tavily_request_delay = self._get_float("TAVILY_REQUEST_DELAY", 1.0)
 
     @classmethod
     def get(cls, env_file: Path | str | None = None) -> "Config":

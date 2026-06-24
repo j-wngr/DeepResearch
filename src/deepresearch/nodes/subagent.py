@@ -21,6 +21,7 @@ from langgraph.types import interrupt
 
 from deepresearch import acquisition
 from deepresearch.config import get_config
+from deepresearch.sources import quality
 from deepresearch.llm import extract_json
 from deepresearch.models import (
     AcquisitionRequest,
@@ -245,8 +246,11 @@ def _fetch_from_search_hit(
     super_topic: str = "",
     sub_topic: str = "",
 ) -> SourceRef | Blocked | None:
-    """Fetch/convert/save/ingest a single search hit, returning its SourceRef."""
-    from deepresearch.rag import index as rag_index
+    """Fetch, convert, and save a single search hit to the pool.
+
+    Does NOT index in RAG — that happens in _gate_node only for sources that
+    pass the relevance gate, so the RAG stays free of irrelevant content.
+    """
     from deepresearch.sources import pdf as pdf_source
     from deepresearch.sources import pool, web
 
@@ -278,27 +282,40 @@ def _fetch_from_search_hit(
             # by the gate, and it suppresses the web-search gap-fill.
             logger.warning("Empty extract for %s; skipping", hit.url)
             return None
+        cfg = get_config()
+        if not quality.is_acceptable(
+            markdown,
+            min_words=cfg.min_source_words,
+            max_link_density=cfg.max_link_density,
+        ):
+            logger.warning(
+                "Low-quality extract for %s (words=%d, link_density=%.2f); skipping",
+                hit.url,
+                quality.word_count(markdown),
+                quality.link_density(markdown),
+            )
+            return None
         source_ref = pool.save_web(markdown, hit.url, hit.title, bibliography_dir)
 
-    rag_index.ingest(
-        source_ref,
-        store,
-        embeddings,
-        bibliography_dir,
-        super_topic=super_topic,
-        sub_topic=sub_topic,
-    )
     return source_ref
 
 
 def _gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
-    """Run the relevance gate over each candidate; keep whitelisted + evidence."""
+    """Run the relevance gate over each candidate; keep whitelisted + evidence.
+
+    RAG indexing happens here — only sources that pass the gate are indexed,
+    so the vector store stays free of irrelevant content.
+    """
     configurable = config.get("configurable", {})
     chat_fn: Callable[[str, list], str] = configurable["chat_fn"]
     bibliography_dir = Path(configurable["bibliography_dir"])
     state_dir = Path(configurable["state_dir"])
+    store = configurable["store"]
+    embeddings = configurable["embeddings"]
 
     from deepresearch import gate
+    from deepresearch.rag import index as rag_index
+    from deepresearch.sources import pool
 
     sub = state["subtopic"]
     super_slug = state["slug"]
@@ -316,8 +333,24 @@ def _gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
             chat_fn=chat_fn,
         )
         if verdict.relevant and verdict.evidence is not None:
+            rag_index.ingest(
+                candidate,
+                store,
+                embeddings,
+                bibliography_dir,
+                super_topic=super_slug,
+                sub_topic=sub.slug,
+            )
             whitelisted.append(candidate)
             evidence.append(verdict.evidence)
+        else:
+            logger.info(
+                "Gate rejected %s (%s); removing from pool",
+                candidate.id,
+                verdict.reason,
+            )
+            pool.remove(candidate.id, bibliography_dir)
+            store.delete(candidate.id)
 
     return {"whitelisted": whitelisted, "evidence": evidence, "candidates": []}
 

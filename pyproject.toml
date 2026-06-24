@@ -9,7 +9,7 @@ dependencies = [
     "langchain-ollama",
     "chromadb",
     "tavily-python",
-    "marker-pdf",
+    "pymupdf4llm",
     "httpx",
     "pydantic>=2",
     "python-dotenv",
@@ -17,6 +17,10 @@ dependencies = [
     "pyyaml>=6.0.3",
     "langgraph-checkpoint-sqlite>=3.1.0",
 ]
+
+[project.optional-dependencies]
+ocr = ["marker-pdf"]
+server = ["marker-pdf", "fastapi", "uvicorn[standard]", "python-multipart"]
 
 [project.scripts]
 deepresearch = "deepresearch.cli:app"

@@ -9,7 +9,7 @@ Inspired by [LangChain's Open Deep Research](https://www.langchain.com/blog/open
 1. You provide a research question.
 2. The agent asks a short round of clarifying questions, then proposes a breakdown into sub-topics.
 3. You approve or revise the research brief.
-4. Sub-topic research agents run in parallel, searching the web (Tavily) and a local RAG over previously gathered sources.
+4. Sub-topic research agents run in parallel, searching the web (Tavily) and a local RAG over previously gathered sources. Each source passes a fast quality filter (word count, link density) and an LLM relevance gate; sources that fail are removed from the pool so they don't pollute future runs.
 5. A writer agent synthesizes all findings into one cited report.
 6. An evaluator scores coverage and loops autonomously (up to a configurable cap) before handing off to you for a final approval.
 
@@ -49,6 +49,9 @@ Key settings:
 | `MODEL_LONG` | Large-context model (relevance gate, synthesis) |
 | `MODEL_WRITER` | Strong model (final writer, evaluator) |
 | `EMBED_MODEL` | Embedding model (default: `mxbai-embed-large`) |
+| `PDF_CONVERTER` | `pymupdf` (default, lightweight), `marker` (local OCR — requires `uv sync --extra ocr`), or `remote` (offload to a remote server) |
+| `PDF_CONVERTER_URL` | Required when `PDF_CONVERTER=remote` — URL of the remote converter, e.g. `http://192.168.25.188:8080/convert` |
+| `PDF_CONVERTER_API_KEY` | Optional Bearer token for the remote converter server |
 | `TAVILY_API_KEY` | Tavily API key |
 | `BIBLIOGRAPHY_DIR` | Where gathered sources are stored (default: `./Bibliography`) |
 | `OUTPUT_DIR` | Where briefs and reports are written (default: `./research`) |
@@ -73,6 +76,10 @@ The tool will:
 
 The report is saved to `research/<slug>/report.md`.
 
+### Pause a run
+
+Hit `Ctrl+C` at any point. The run is checkpointed after every step, so nothing is lost. Resume it later with the slug.
+
 ### Resume an interrupted run
 
 Runs are checkpointed after every step. If a run is interrupted (process killed, paywalled PDF that needs a manual download, etc.), resume it by slug:
@@ -82,6 +89,17 @@ uv run deepresearch resume <slug>
 ```
 
 The slug is printed when you start a run and is also the folder name under `research/`.
+
+### Stop a run
+
+There is no explicit stop command. To permanently abandon a run, simply don't resume it. Its checkpoint stays in `.deepresearch/` but does not interfere with other runs. To free the disk space, delete the checkpoint directory for that thread:
+
+```bash
+# Remove the checkpoint for a specific run
+rm -rf .deepresearch/<slug>
+# Remove the output artefacts too, if you no longer need them
+rm -rf research/<slug>
+```
 
 ### List all runs
 
@@ -107,13 +125,67 @@ uv run deepresearch sync
 
 This also runs automatically at the start of every `run` and `resume`.
 
+## PDF conversion
+
+PDFs are converted to markdown before being indexed. Three converters are available via `PDF_CONVERTER` in your `.env`:
+
+| Value | Description |
+|---|---|
+| `pymupdf` | **Default.** Fast, no model downloads. Works well for machine-readable PDFs. |
+| `marker` | Local OCR via [marker-pdf](https://github.com/VikParuchuri/marker). Better quality on scanned documents, but downloads large torch/safetensors models on first use. Requires: `uv sync --extra ocr` |
+| `remote` | POSTs the PDF to a remote marker server. Keeps your laptop light while offloading OCR to a more powerful machine. Requires `PDF_CONVERTER_URL`. |
+
+### Running a remote marker server
+
+On the server machine (requires a copy of this repo, or just the deps):
+
+```bash
+# Option A — from this repo
+uv sync --extra server
+python scripts/marker_server.py
+
+# Option B — standalone
+pip install marker-pdf fastapi "uvicorn[standard]" python-multipart
+python scripts/marker_server.py
+```
+
+Environment variables for the server:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MARKER_SERVER_HOST` | `0.0.0.0` | Bind address |
+| `MARKER_SERVER_PORT` | `8080` | Bind port |
+| `MARKER_SERVER_API_KEY` | _(unset)_ | If set, require `Authorization: Bearer <key>` on every request. Leave unset on a trusted LAN. |
+
+Then in your DeepResearch `.env` on the client machine:
+
+```
+PDF_CONVERTER=remote
+PDF_CONVERTER_URL=http://<server-ip>:8080/convert
+PDF_CONVERTER_API_KEY=<same key as MARKER_SERVER_API_KEY, if set>
+```
+
 ## Dropping in your own PDFs
 
-Place PDFs in `Bibliography/_inbox/`. They are picked up, converted to markdown via [marker](https://github.com/VikParuchuri/marker), deduplicated, and indexed on the next `sync` (or at the start of the next run).
+Place PDFs in `Bibliography/_inbox/`. They are picked up, converted to markdown (see `PDF_CONVERTER` in the config table), deduplicated, and indexed on the next `sync` (or at the start of the next run).
 
 ## Paywalled sources
 
-If a subagent encounters a PDF it cannot fetch (paywall, login wall), it will pause and ask you to download it manually, giving you the exact path to save it to (`Bibliography/_inbox/<id>.pdf`). Save the file, then run `deepresearch resume <slug>` to continue.
+If a subagent encounters a PDF it cannot fetch (paywall, login wall), the run pauses and shows you exactly where to save it:
+
+```
+1 blocked source needs a manual download:
+  [1] Smith et al. 2023  https://journal.org/locked-paper.pdf
+      save as: Bibliography/_inbox/<id>.pdf
+
+Download each file and save it to the path shown above, then press Enter.
+
+Press Enter when ready >
+```
+
+Save the file to the path shown, then press Enter — the run detects it automatically and continues. If you can't obtain a source, just press Enter without saving; it will be marked unobtainable and skipped.
+
+If you `Ctrl+C` before pressing Enter, resume with `deepresearch resume <slug>` and the same prompt will reappear.
 
 ## Output structure
 

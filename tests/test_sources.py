@@ -12,7 +12,7 @@ from deepresearch.models import Blocked, SearchHit
 from deepresearch.paths import hash_bytes, hash_url
 from deepresearch.rag.index import reconcile as rag_reconcile
 from deepresearch.rag.store import ChromaStore
-from deepresearch.sources import extract, fetch, get, inbox_reconcile, pool, save_pdf, save_web
+from deepresearch.sources import extract, fetch, get, inbox_reconcile, pool, remove, save_pdf, save_web
 from deepresearch.sources import search as web_search
 
 
@@ -144,6 +144,37 @@ def test_save_pdf_writes_both_files(tmp_workspace):
 
 
 @pytest.mark.unit
+def test_remove_web_source(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref = save_web("# Page\n\nContent.\n", "http://example.com/page", "Page", bib_dir)
+    md_path = bib_dir / "_sources" / f"{ref.id}.md"
+
+    assert md_path.exists()
+    remove(ref.id, bib_dir)
+    assert not md_path.exists()
+
+
+@pytest.mark.unit
+def test_remove_pdf_source(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref = save_pdf(b"pdf bytes", "# Paper\n\nText.\n", "http://example.com/paper.pdf", "Paper", bib_dir)
+    md_path = bib_dir / "_sources" / f"{ref.id}.md"
+    pdf_path = bib_dir / "_sources" / "pdfs" / f"{ref.id}.pdf"
+
+    assert md_path.exists()
+    assert pdf_path.exists()
+    remove(ref.id, bib_dir)
+    assert not md_path.exists()
+    assert not pdf_path.exists()
+
+
+@pytest.mark.unit
+def test_remove_nonexistent_is_noop(tmp_workspace):
+    """remove() on a source that doesn't exist should not raise."""
+    remove("nonexistent-id", tmp_workspace["bibliography_dir"])
+
+
+@pytest.mark.unit
 def test_get_returns_markdown(tmp_workspace):
     bib_dir = tmp_workspace["bibliography_dir"]
     url = "http://example.com/page"
@@ -207,6 +238,118 @@ def test_web_extract_parses_real_tavily_results_shape():
 
 
 @pytest.mark.unit
+def test_throttle_sleeps_when_called_too_soon(monkeypatch):
+    """_throttle sleeps for the remaining interval when called before the delay expires."""
+    import deepresearch.sources.web as web_mod
+
+    slept: list[float] = []
+    calls: list[float] = []
+    t = 0.0
+
+    def fake_monotonic():
+        return t
+
+    def fake_sleep(secs):
+        nonlocal t
+        slept.append(secs)
+        t += secs
+
+    # Simulate a call that happened 0.3s ago with a 1.0s delay required
+    monkeypatch.setattr(web_mod, "_throttle_last_call", t - 0.3)
+    web_mod._throttle(1.0, _sleep=fake_sleep, _monotonic=fake_monotonic)
+
+    assert len(slept) == 1
+    assert abs(slept[0] - 0.7) < 0.01
+
+
+@pytest.mark.unit
+def test_throttle_no_sleep_when_delay_elapsed(monkeypatch):
+    """_throttle does not sleep when enough time has already passed."""
+    import deepresearch.sources.web as web_mod
+
+    slept: list[float] = []
+    t = 10.0
+
+    monkeypatch.setattr(web_mod, "_throttle_last_call", t - 2.0)  # 2s ago, delay=1s
+    web_mod._throttle(1.0, _sleep=lambda s: slept.append(s), _monotonic=lambda: t)
+
+    assert slept == []
+
+
+@pytest.mark.unit
+def test_transient_tavily_call_retries_on_rate_limit(monkeypatch):
+    """A 429-style exception is caught, converted to TavilyRateLimitError, and retried."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.web import _transient_tavily_call
+
+    monkeypatch.setenv("TAVILY_MAX_RETRIES", "3")
+    monkeypatch.setenv("TAVILY_REQUEST_DELAY", "0")
+    reset_config()
+
+    attempts = {"n": 0}
+
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise Exception("HTTP 429: too many requests")
+        return "ok"
+
+    result = _transient_tavily_call(flaky, _sleep=lambda _: None, _monotonic=lambda: 0.0)
+    assert result == "ok"
+    assert attempts["n"] == 3
+    reset_config()
+
+
+@pytest.mark.unit
+def test_transient_tavily_call_retries_on_usage_limit_class(monkeypatch):
+    """Exceptions whose class name contains 'usagelimitexceeded' are treated as rate limits."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.web import _transient_tavily_call
+
+    monkeypatch.setenv("TAVILY_MAX_RETRIES", "2")
+    monkeypatch.setenv("TAVILY_REQUEST_DELAY", "0")
+    reset_config()
+
+    class UsageLimitExceededError(Exception):
+        pass
+
+    attempts = {"n": 0}
+
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise UsageLimitExceededError("quota exceeded")
+        return "done"
+
+    result = _transient_tavily_call(flaky, _sleep=lambda _: None, _monotonic=lambda: 0.0)
+    assert result == "done"
+    reset_config()
+
+
+@pytest.mark.unit
+def test_transient_tavily_call_does_not_swallow_other_errors(monkeypatch):
+    """Non-rate-limit exceptions propagate immediately without retry."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.web import _transient_tavily_call
+
+    monkeypatch.setenv("TAVILY_MAX_RETRIES", "3")
+    monkeypatch.setenv("TAVILY_REQUEST_DELAY", "0")
+    reset_config()
+
+    attempts = {"n": 0}
+
+    def broken():
+        attempts["n"] += 1
+        raise ValueError("bad api key")
+
+    with pytest.raises(ValueError, match="bad api key"):
+        _transient_tavily_call(broken, _sleep=lambda _: None, _monotonic=lambda: 0.0)
+
+    assert attempts["n"] == 1  # no retries
+    reset_config()
+
+
+@pytest.mark.unit
 def test_pdf_fetch_returns_path(tmp_workspace):
     bib_dir = tmp_workspace["bibliography_dir"]
     fake_pdf = FakePdf(pdfs={"http://ex.com/paper.pdf": b"pdf bytes"})
@@ -238,6 +381,169 @@ def test_pdf_convert_returns_markdown():
     result = pdf_convert(path, converter=fake_pdf)
 
     assert result == "# Converted\n\nPDF content."
+
+
+@pytest.mark.unit
+def test_convert_dispatches_to_pymupdf(monkeypatch):
+    """convert() calls _convert_pymupdf when PDF_CONVERTER=pymupdf (default)."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.pdf import convert
+
+    monkeypatch.setenv("PDF_CONVERTER", "pymupdf")
+    reset_config()
+
+    called_with = []
+
+    monkeypatch.setattr(
+        "deepresearch.sources.pdf._convert_pymupdf",
+        lambda path: called_with.append(path) or "pymupdf markdown",
+    )
+
+    result = convert(Path("/fake/doc.pdf"))
+    assert result == "pymupdf markdown"
+    assert called_with == [Path("/fake/doc.pdf")]
+    reset_config()
+
+
+@pytest.mark.unit
+def test_convert_dispatches_to_marker(monkeypatch):
+    """convert() calls _convert_marker when PDF_CONVERTER=marker."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.pdf import convert
+
+    monkeypatch.setenv("PDF_CONVERTER", "marker")
+    reset_config()
+
+    called_with = []
+
+    monkeypatch.setattr(
+        "deepresearch.sources.pdf._convert_marker",
+        lambda path: called_with.append(path) or "marker markdown",
+    )
+
+    result = convert(Path("/fake/doc.pdf"))
+    assert result == "marker markdown"
+    assert called_with == [Path("/fake/doc.pdf")]
+    reset_config()
+
+
+@pytest.mark.unit
+def test_convert_marker_missing_extra(monkeypatch):
+    """_convert_marker raises a clear ImportError when marker-pdf is not installed."""
+    import sys
+    from deepresearch.sources.pdf import _convert_marker
+
+    # Simulate marker not being installed
+    monkeypatch.setitem(sys.modules, "marker", None)
+    monkeypatch.setitem(sys.modules, "marker.config.parser", None)
+    monkeypatch.setitem(sys.modules, "marker.converters.pdf", None)
+    monkeypatch.setitem(sys.modules, "marker.models", None)
+
+    with pytest.raises(ImportError, match="uv sync --extra ocr"):
+        _convert_marker(Path("/fake/doc.pdf"))
+
+
+@pytest.mark.unit
+def test_convert_dispatches_to_remote(monkeypatch):
+    """convert() calls _convert_remote when PDF_CONVERTER=remote."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.pdf import convert
+
+    monkeypatch.setenv("PDF_CONVERTER", "remote")
+    monkeypatch.setenv("PDF_CONVERTER_URL", "http://marker-server:8080/convert")
+    reset_config()
+
+    called_with = []
+    monkeypatch.setattr(
+        "deepresearch.sources.pdf._convert_remote",
+        lambda path: called_with.append(path) or "remote markdown",
+    )
+
+    result = convert(Path("/fake/doc.pdf"))
+    assert result == "remote markdown"
+    assert called_with == [Path("/fake/doc.pdf")]
+    reset_config()
+
+
+@pytest.mark.unit
+def test_convert_remote_missing_url(monkeypatch):
+    """_convert_remote raises RuntimeError when PDF_CONVERTER_URL is not set."""
+    from deepresearch.config import reset_config
+    from deepresearch.sources.pdf import _convert_remote
+
+    monkeypatch.setenv("PDF_CONVERTER_URL", "")
+    reset_config()
+
+    with pytest.raises(RuntimeError, match="PDF_CONVERTER_URL"):
+        _convert_remote(Path("/fake/doc.pdf"))
+    reset_config()
+
+
+@pytest.mark.unit
+def test_convert_remote_posts_pdf_and_returns_markdown(monkeypatch, tmp_path):
+    """_convert_remote POSTs the file and extracts markdown from the JSON response."""
+    import httpx
+    from deepresearch.config import reset_config
+    from deepresearch.sources.pdf import _convert_remote
+
+    monkeypatch.setenv("PDF_CONVERTER_URL", "http://marker-server:8080/convert")
+    monkeypatch.setenv("PDF_CONVERTER_API_KEY", "")
+    reset_config()
+
+    calls = []
+
+    class _MockResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"markdown": "# Remote\n\nConverted."}
+
+    def fake_post(url, *, files, headers, timeout):
+        calls.append({"url": url, "headers": headers})
+        return _MockResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake content")
+
+    result = _convert_remote(pdf)
+
+    assert result == "# Remote\n\nConverted."
+    assert calls[0]["url"] == "http://marker-server:8080/convert"
+    assert "Authorization" not in calls[0]["headers"]
+    reset_config()
+
+
+@pytest.mark.unit
+def test_convert_remote_sends_auth_header(monkeypatch, tmp_path):
+    """_convert_remote includes Authorization header when PDF_CONVERTER_API_KEY is set."""
+    import httpx
+    from deepresearch.config import reset_config
+    from deepresearch.sources.pdf import _convert_remote
+
+    monkeypatch.setenv("PDF_CONVERTER_URL", "http://marker-server:8080/convert")
+    monkeypatch.setenv("PDF_CONVERTER_API_KEY", "supersecret")
+    reset_config()
+
+    captured = {}
+
+    class _MockResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"markdown": "md"}
+
+    def fake_post(url, *, files, headers, timeout):
+        captured["headers"] = headers
+        return _MockResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake content")
+    _convert_remote(pdf)
+
+    assert captured["headers"].get("Authorization") == "Bearer supersecret"
+    reset_config()
 
 
 @pytest.mark.unit
@@ -295,6 +601,77 @@ def test_inbox_reconcile_hash_url_filename(tmp_workspace):
     assert not inbox_path.exists()
     assert (bib_dir / "_sources" / "pdfs" / f"{expected_id}.pdf").exists()
     assert (bib_dir / "_sources" / f"{expected_id}.md").exists()
+
+
+class _MockHttpxResponse:
+    """Minimal httpx response stand-in for PDF fetch tests."""
+
+    def __init__(self, status_code: int = 200, content: bytes = b"", content_type: str = "application/pdf"):
+        self.status_code = status_code
+        self.content = content
+        self.headers = {"content-type": content_type}
+        self.text = content.decode("utf-8", errors="replace")
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import httpx
+            raise httpx.HTTPStatusError("error", request=None, response=None)
+
+
+@pytest.mark.unit
+def test_pdf_client_fetch_empty_response_is_blocked(monkeypatch):
+    """HttpxPdfClient.fetch returns Blocked when the server sends an empty body."""
+    from deepresearch.sources.pdf import HttpxPdfClient
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b""))
+    result = HttpxPdfClient().fetch("http://ex.com/paper.pdf")
+    assert isinstance(result, Blocked)
+
+
+@pytest.mark.unit
+def test_pdf_client_fetch_non_pdf_magic_is_blocked(monkeypatch):
+    """HttpxPdfClient.fetch returns Blocked when response lacks the %PDF- header."""
+    from deepresearch.sources.pdf import HttpxPdfClient
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b"<html>error</html>", content_type="text/html"))
+    result = HttpxPdfClient().fetch("http://ex.com/paper.pdf")
+    assert isinstance(result, Blocked)
+
+
+@pytest.mark.unit
+def test_pdf_fetch_no_client_empty_response_is_blocked(tmp_workspace, monkeypatch):
+    """Module-level fetch (client=None) returns Blocked for an empty response body."""
+    import httpx
+    from deepresearch.sources.pdf import fetch as pdf_fetch
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b""))
+    result = pdf_fetch("http://ex.com/paper.pdf", bibliography_dir=tmp_workspace["bibliography_dir"])
+    assert isinstance(result, Blocked)
+
+
+@pytest.mark.unit
+def test_pdf_fetch_no_client_non_pdf_magic_is_blocked(tmp_workspace, monkeypatch):
+    """Module-level fetch (client=None) returns Blocked when bytes lack %PDF- magic."""
+    import httpx
+    from deepresearch.sources.pdf import fetch as pdf_fetch
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b"<html>not a pdf</html>", content_type="text/html"))
+    result = pdf_fetch("http://ex.com/paper.pdf", bibliography_dir=tmp_workspace["bibliography_dir"])
+    assert isinstance(result, Blocked)
+
+
+@pytest.mark.unit
+def test_pdf_client_fetch_valid_pdf_passes(monkeypatch):
+    """HttpxPdfClient.fetch returns bytes for a valid PDF response."""
+    from deepresearch.sources.pdf import HttpxPdfClient
+    import httpx
+
+    valid = b"%PDF-1.4 fake content"
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=valid))
+    result = HttpxPdfClient().fetch("http://ex.com/paper.pdf")
+    assert result == valid
 
 
 @pytest.mark.unit

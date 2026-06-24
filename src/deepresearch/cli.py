@@ -1,6 +1,6 @@
 """Typer CLI entry point."""
 
-import json
+from pathlib import Path
 
 import typer
 
@@ -92,8 +92,29 @@ def _display_interrupt(data):
         for idx, request in enumerate(requests, start=1):
             typer.echo(f"  [{idx}] {request.get('title', '')}  {request.get('url', '')}")
             typer.echo(f"      save as: {request.get('save_path', '')}")
+        typer.echo("\nDownload each file and save it to the path shown above, then press Enter.")
     else:
         typer.echo(str(data))
+
+
+def _collect_acquire_responses(requests: list[dict]) -> list[dict]:
+    """Wait for user confirmation, then auto-detect which inbox files are present."""
+    typer.prompt("\nPress Enter when ready", default="", show_default=False)
+    responses = []
+    found = []
+    missing = []
+    for req in requests:
+        if Path(req["save_path"]).exists():
+            responses.append({"source_id": req["source_id"], "kind": "saved", "save_path": req["save_path"]})
+            found.append(req.get("title") or req["source_id"])
+        else:
+            responses.append({"source_id": req["source_id"], "kind": "unobtainable"})
+            missing.append(req.get("title") or req["source_id"])
+    if found:
+        typer.echo(f"  Found ({len(found)}): {', '.join(found)}")
+    if missing:
+        typer.echo(f"  Not found — skipping ({len(missing)}): {', '.join(missing)}")
+    return responses
 
 
 def _collect_resume_input(current_state):
@@ -102,8 +123,7 @@ def _collect_resume_input(current_state):
     for interrupt_data in interrupts:
         _display_interrupt(interrupt_data.value)
     if interrupts and interrupts[0].value.get("type") == "acquire":
-        response = typer.prompt("\nJSON acquisition responses")
-        return json.loads(response)
+        return _collect_acquire_responses(interrupts[0].value.get("requests", []))
     return typer.prompt("\nYour response")
 
 
@@ -122,7 +142,7 @@ def _run_interactive(graph, input_state, config):
         for interrupt_data in interrupts:
             _display_interrupt(interrupt_data.value)
         if interrupts and interrupts[0].value.get("type") == "acquire":
-            user_input = json.loads(typer.prompt("\nJSON acquisition responses"))
+            user_input = _collect_acquire_responses(interrupts[0].value.get("requests", []))
         else:
             user_input = typer.prompt("\nYour response")
         current_input = Command(resume=user_input)
@@ -132,12 +152,14 @@ def _run_interactive(graph, input_state, config):
 def run(question: str) -> None:
     """Start a new research run."""
     from deepresearch.config import get_config
+    from deepresearch.endpoints import check_embed_model
     from deepresearch.graph import build_graph
     from deepresearch.paths import slug
     from deepresearch.persistence import create_checkpointer
     from deepresearch.state import ResearchState
 
     cfg = get_config()
+    check_embed_model(cfg)
     run_slug = slug(question)
 
     # Reconcile before fan-out
@@ -182,10 +204,12 @@ def resume(slug: str) -> None:
     from langgraph.types import Command
 
     from deepresearch.config import get_config
+    from deepresearch.endpoints import check_embed_model
     from deepresearch.graph import build_graph
     from deepresearch.persistence import create_checkpointer
 
     cfg = get_config()
+    check_embed_model(cfg)
 
     # Reconcile on resume
     _do_sync(cfg)

@@ -79,6 +79,11 @@ class ChromaStore:
                 source_ids.add(sid)
         return source_ids
 
+    def delete(self, source_id: str) -> None:
+        """Remove all chunks for ``source_id`` from the collection."""
+        with self._write_lock:
+            self._collection.delete(where={"source_id": source_id})
+
     def reset(self) -> None:
         """Delete and recreate the collection (for tests)."""
         self._client.delete_collection(name=COLLECTION_NAME)

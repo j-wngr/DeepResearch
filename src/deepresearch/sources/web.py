@@ -1,25 +1,64 @@
 """Tavily search and extract wrapper."""
 
+import threading
+import time
+
 from deepresearch.config import get_config
 from deepresearch.models import SearchHit
 from deepresearch.retry import TavilyRateLimitError, retry_call
 
+# ---------------------------------------------------------------------------
+# Process-wide throttle — shared across all concurrent subagent threads so
+# that every Tavily call (search or extract) respects TAVILY_REQUEST_DELAY.
+# ---------------------------------------------------------------------------
 
-def _transient_tavily_call(fn):
+_throttle_lock = threading.Lock()
+_throttle_last_call: float = 0.0
+
+
+def _throttle(min_interval: float, *, _sleep=time.sleep, _monotonic=time.monotonic) -> None:
+    """Block until at least ``min_interval`` seconds have elapsed since the last call."""
+    if min_interval <= 0:
+        return
+    global _throttle_last_call
+    with _throttle_lock:
+        elapsed = _monotonic() - _throttle_last_call
+        wait = min_interval - elapsed
+        if wait > 0:
+            _sleep(wait)
+        _throttle_last_call = _monotonic()
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Return True for HTTP 429s and Tavily usage-limit exceptions."""
+    msg = str(exc).lower()
+    if any(k in msg for k in ("429", "rate limit", "too many requests", "usage limit")):
+        return True
+    # Tavily SDK raises UsageLimitExceededError; match by name so we don't need
+    # to import it (it may not exist in all SDK versions).
+    return type(exc).__name__.lower() in ("usagelimitexceedederror", "ratelimiterror")
+
+
+def _transient_tavily_call(fn, *, _sleep=time.sleep, _monotonic=time.monotonic):
     cfg = get_config()
 
     def _call():
+        _throttle(cfg.tavily_request_delay, _sleep=_sleep, _monotonic=_monotonic)
         try:
             return fn()
         except (ConnectionError, TimeoutError) as exc:
             raise TavilyRateLimitError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            if _is_rate_limit_error(exc):
+                raise TavilyRateLimitError(str(exc)) from exc
+            raise
 
     return retry_call(
         _call,
         max_attempts=cfg.tavily_max_retries,
-        initial_interval=0.5,
+        initial_interval=cfg.tavily_retry_initial_interval,
         backoff_factor=2.0,
-        max_interval=4.0,
+        max_interval=30.0,  # rate limits need longer recovery than transient errors
     )
 
 

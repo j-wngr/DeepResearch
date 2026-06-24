@@ -135,6 +135,12 @@ def save_pdf(
     return source_ref
 
 
+def remove(source_id: str, bibliography_dir: Path) -> None:
+    """Delete a source from the pool. Silent no-op if the files don't exist."""
+    (bibliography_dir / "_sources" / f"{source_id}.md").unlink(missing_ok=True)
+    (bibliography_dir / "_sources" / "pdfs" / f"{source_id}.pdf").unlink(missing_ok=True)
+
+
 def get(source_id: str, bibliography_dir: Path) -> str:
     """Return full markdown body for a source by id.
 

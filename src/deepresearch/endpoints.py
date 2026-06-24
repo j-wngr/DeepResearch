@@ -77,3 +77,37 @@ def resolve_ollama_endpoints(cfg: Config, *, probe: Probe = _http_reachable) -> 
             )
 
     return cfg
+
+
+TagsFetcher = Callable[[str, dict | None], set[str] | None]
+
+
+def _fetch_tags(base_url: str, headers: dict | None = None) -> set[str] | None:
+    """Return model names listed by the Ollama server, or None when unreachable."""
+    try:
+        resp = httpx.get(f"{base_url}/api/tags", headers=headers or {}, timeout=5.0)
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    return {m.get("name") or m.get("model") for m in resp.json().get("models", [])}
+
+
+def check_embed_model(cfg: Config, *, _tags: TagsFetcher = _fetch_tags) -> None:
+    """Raise RuntimeError if the embed model is not present on the embed server.
+
+    Skipped for cloud endpoints (ollama.com) where /api/tags does not enumerate
+    all available models. Also skipped when the server is unreachable — that
+    case is already handled (and logged) by resolve_ollama_endpoints.
+    """
+    base_url = str(cfg.embed_base_url).rstrip("/")
+    if "ollama.com" in base_url:
+        return
+    headers: dict | None = {"Authorization": f"Bearer {cfg.ollama_api_key}"} if cfg.ollama_api_key else None
+    models = _tags(base_url, headers)
+    if models is None:
+        return  # unreachable — resolve_ollama_endpoints already warned
+    if cfg.embed_model not in models:
+        raise RuntimeError(
+            f"Embed model '{cfg.embed_model}' not found on Ollama server at {base_url}.\n"
+            f"Pull it with:  ollama pull {cfg.embed_model}"
+        )

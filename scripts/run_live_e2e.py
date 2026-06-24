@@ -117,10 +117,16 @@ def _validate_prereqs(cfg) -> list[str]:
         if not reachable:
             errors.append(f"Ollama server unreachable at {base_url} for {purpose} model '{model}'")
         elif not present:
-            print(
-                f"WARNING: Ollama {purpose} model '{model}' not listed at {base_url}; "
-                "proceeding anyway (it may be a cloud alias or lazily loaded)."
-            )
+            if purpose == "embed":
+                errors.append(
+                    f"Embed model '{model}' not found at {base_url}. "
+                    f"Pull it with:  ollama pull {model}"
+                )
+            else:
+                print(
+                    f"WARNING: Ollama {purpose} model '{model}' not listed at {base_url}; "
+                    "proceeding anyway (it may be a cloud alias or lazily loaded)."
+                )
 
     return errors
 

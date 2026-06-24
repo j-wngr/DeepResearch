@@ -1,4 +1,4 @@
-"""PDF fetch and convert via httpx and marker."""
+"""PDF fetch and convert via httpx, with pymupdf4llm (default), marker (ocr extra), or remote server."""
 
 from pathlib import Path
 
@@ -15,13 +15,13 @@ _BROWSER_USER_AGENT = (
 
 
 class HttpxPdfClient:
-    """Real PDF client backed by httpx + marker.
+    """Real PDF client backed by httpx + pymupdf4llm (or marker when PDF_CONVERTER=marker).
 
     Injected into the graph via ``config["configurable"]["pdf_client"]`` so the
     subagent can fetch and convert PDFs. ``fetch`` returns raw bytes (or
     ``Blocked``); ``pdf.fetch`` then saves them to the inbox. ``convert``
-    delegates to the module-level marker conversion. Tests inject a fake with
-    the same surface instead.
+    delegates to the module-level ``convert()``, which dispatches on config.
+    Tests inject a fake with the same surface instead.
     """
 
     _HEADERS = {"User-Agent": _BROWSER_USER_AGENT}
@@ -40,7 +40,10 @@ class HttpxPdfClient:
         text = response.text if not content_type.startswith("application/pdf") else ""
         if text and is_login_wall(text):
             return Blocked(url)
-        return response.content
+        data = response.content
+        if not data or not data.startswith(b"%PDF-"):
+            return Blocked(url, reason="empty or invalid PDF response")
+        return data
 
     def convert(self, path: Path) -> str:
         return convert(path, converter=None)
@@ -92,6 +95,8 @@ def fetch(
             return Blocked(url)
 
         pdf_bytes = response.content
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF-"):
+            return Blocked(url, reason="empty or invalid PDF response")
     else:
         result = client.fetch(url)
         if isinstance(result, Blocked):
@@ -110,18 +115,62 @@ def fetch(
 
 
 def convert(path: Path, converter=None) -> str:
-    """Convert a PDF to markdown via marker.
+    """Convert a PDF to markdown.
 
-    When converter is None, uses real marker.
-    When converter is provided (FakePdf in tests), uses it directly.
-    Returns markdown string.
+    When converter is provided (FakePdf in tests), delegates to it directly.
+    Otherwise dispatches on PDF_CONVERTER config:
+      ``pymupdf``  — default; lightweight, no model downloads, digital PDFs only.
+      ``marker``   — local OCR via marker-pdf; requires ``uv sync --extra ocr``.
+      ``remote``   — POST to PDF_CONVERTER_URL; marker (or any converter) runs on a
+                     remote server; requires PDF_CONVERTER_URL to be set.
     """
     if converter is not None:
         return converter.convert(path)
 
-    from marker.config.parser import ConfigParser
-    from marker.converters.pdf import PdfConverter
-    from marker.models import create_model_dict
+    cfg = get_config()
+    if cfg.pdf_converter == "marker":
+        return _convert_marker(path)
+    if cfg.pdf_converter == "remote":
+        return _convert_remote(path)
+    return _convert_pymupdf(path)
+
+
+def _convert_pymupdf(path: Path) -> str:
+    import pymupdf4llm
+
+    return pymupdf4llm.to_markdown(str(path))
+
+
+def _convert_remote(path: Path) -> str:
+    cfg = get_config()
+    if not cfg.pdf_converter_url:
+        raise RuntimeError(
+            "PDF_CONVERTER=remote requires PDF_CONVERTER_URL to be set in your .env."
+        )
+    headers: dict[str, str] = {}
+    if cfg.pdf_converter_api_key:
+        headers["Authorization"] = f"Bearer {cfg.pdf_converter_api_key}"
+    with open(path, "rb") as f:
+        response = httpx.post(
+            cfg.pdf_converter_url,
+            files={"file": (path.name, f, "application/pdf")},
+            headers=headers,
+            timeout=300.0,  # marker on a cold server can be slow for large PDFs
+        )
+    response.raise_for_status()
+    return response.json()["markdown"]
+
+
+def _convert_marker(path: Path) -> str:
+    try:
+        from marker.config.parser import ConfigParser
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+    except ImportError as exc:
+        raise ImportError(
+            "marker-pdf is not installed. "
+            "Install the ocr extra:  uv sync --extra ocr"
+        ) from exc
 
     config = {
         "use_llm": False,
@@ -139,14 +188,14 @@ def convert(path: Path, converter=None) -> str:
     }
     config_parser = ConfigParser(config)
     artifact_dict = create_model_dict()
-    converter = PdfConverter(
+    marker_converter = PdfConverter(
         config=config_parser.generate_config_dict(),
         artifact_dict=artifact_dict,
         processor_list=config_parser.get_processors(),
         renderer=config_parser.get_renderer(),
         llm_service=config_parser.get_llm_service(),
     )
-    rendered = converter(str(path))
+    rendered = marker_converter(str(path))
     if hasattr(rendered, "markdown"):
         return rendered.markdown
     return str(rendered)

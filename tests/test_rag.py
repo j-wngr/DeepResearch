@@ -397,3 +397,34 @@ def test_reconcile_indexes_unindexed(tmp_workspace, embeddings):
     second = reconcile(bib_dir, store, embeddings)
     assert second == 0
     assert store.count() == expected_count
+
+
+@pytest.mark.unit
+def test_store_delete_removes_chunks(tmp_workspace, embeddings):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+
+    ref = SourceRef(
+        id="del-src",
+        type="web",
+        url="http://example.com",
+        title="Delete Me",
+        source_path="_sources/del-src.md",
+        retrieved_at="2024-01-01T00:00:00+00:00",
+        content_hash="abc",
+    )
+    seed_source(bib_dir, "del-src", "# Delete Me\n\nContent that will be removed.\n")
+    ingest(ref, store, embeddings, bib_dir)
+    assert "del-src" in store.list_source_ids()
+
+    store.delete("del-src")
+    assert "del-src" not in store.list_source_ids()
+
+
+@pytest.mark.unit
+def test_store_delete_nonexistent_is_noop(tmp_workspace, embeddings):
+    """delete() on a source not in the store should not raise."""
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+    store.delete("does-not-exist")
