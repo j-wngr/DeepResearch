@@ -11,7 +11,7 @@ The proposed deep research framework differs in some points from the LangChain s
   - Source pool markdown: `Bibliography/_sources/<id>.md`
   - Raw PDFs (web-downloaded or user-supplied): `Bibliography/_sources/pdfs/<id>.pdf`
   - Per-super-topic deliverables: `research/<super-topic-slug>/...`
-- PDFs are parsed to markdown using the **marker** package (OCR + LLM refinement) and stored in the source pool alongside the original.
+- PDFs are parsed to markdown and stored in the source pool alongside the original. The default converter is **pymupdf4llm** (fast, no extra dependencies); **marker** (OCR + LLM refinement) is available as an optional extra (`uv sync --extra ocr`); a **remote converter service** is also supported for offloading conversion.
 - The research supervisor spawns a subagent per sub-topic.
   - **Tavily** is used for searching the web and extracting markdown from HTML.
   - A **local RAG** is built from the markdown files in the Bibliography. The RAG can be queried by the research subagents to find information already present in the Bibliography.
@@ -108,10 +108,10 @@ subagent needs info
                     no  → discard
   → still a gap? → Tavily search
         → result is a .pdf? → fetch via httpx
-              ok      → marker (OCR+LLM) → md
+              ok      → pdf converter (pymupdf4llm/marker/remote) → md
               blocked → interrupt(user): "save <url> as _inbox/<id>.pdf"
-                        → resume → file present → marker → md
-          else            → extract (HTML→md)
+                        → resume → auto-detect file presence → convert → md
+          else            → extract (HTML→md) → quality pre-filter (min words, max link density)
         → dedup → save to central source pool → ingest (chunk → embed → upsert)
         → new doc re-enters the relevance check before it can be used
 ```
@@ -122,11 +122,12 @@ User-supplied PDFs may also be dropped into the Bibliography inbox (`Bibliograph
 - **Candidate → full-document gate (whitelist)** — RAG chunk hits are deduped to their source documents; the gate then runs each candidate's **full markdown** through a large-context chat model and judges its relevance to the sub-topic. In the same pass it **distills the relevant points as verbatim quotes** (the *distilled evidence*), so later steps need not re-load the full body — a context-engineering compression (see [Architecture §10](Architecture.md#10-context-engineering)); final groundedness still re-checks claims against the full source. Documents larger than a generous size cap are truncated with a logged warning (treated as a rare edge case). Only documents that pass are **whitelisted**, and only whitelisted documents may be used as evidence or cited. Chunks are the discovery signal, never the grounding — this avoids chunk-out-of-context errors.
 - **Relevance caching** — the whitelist/discard verdict is cached per `(super-topic, sub-topic, source)`, fully qualified by super-topic slug so a verdict never leaks across runs that share a sub-topic slug. A full document is therefore not re-read on every iteration; newly fetched web/PDF sources enter the same gate before use.
 - **Web sources** — for each chosen search result, **Tavily `extract`** fetches the page and converts HTML→markdown; it is saved once to the central pool as `Bibliography/_sources/<id>.md` (`id` derived from the URL) with frontmatter (`url`, `title`, `retrieved_at`). This is the standard path for every web page: search to discover URLs, `extract` to turn each into a stored markdown source.
-- **PDFs** — `.pdf` results found during Tavily search are fetched directly with **httpx** to `Bibliography/_sources/pdfs/<id>.pdf` (`id` = `hash(url)`, so it is nameable before download; URL-less drop-ins use `hash(bytes)`), then converted with marker (OCR + LLM refinement) to markdown in the pool alongside under the same id.
-- **Blocked fetches (paywalls / bot walls)** — many publishers (IEEE, ResearchGate, Elsevier, login walls) return 403/redirects so httpx cannot retrieve the PDF. When a fetch is blocked, the subagent **blocks via `interrupt()`** and asks the user to download it manually, telling them the **URL, title, and an exact path to save to** (`Bibliography/_inbox/<id>.pdf`, `id` derived from the source URL). The resume prompt accepts **three responses**:
-  1. **Saved at path** — on `research resume <slug>` the agent looks for that exact path; if present it runs marker → pool → relevance gate under the already-known source id (deterministic match, no guessing).
-  2. **Unobtainable / skip** — the source is recorded as a **permanent coverage gap** and the run continues without it (the gap surfaces in the evaluator).
-  3. **Alternative URL** — the user pastes an open-access URL for the same work; the agent fetches that instead and ingests it.
+- **PDFs** — `.pdf` results found during Tavily search are fetched directly with **httpx** to `Bibliography/_sources/pdfs/<id>.pdf` (`id` = `hash(url)`, so it is nameable before download; URL-less drop-ins use `hash(bytes)`), then converted to markdown by the configured PDF converter (pymupdf4llm by default) and stored in the pool under the same id.
+- **Web source quality** — extracted HTML→markdown is passed through a fast pre-filter before save: pages below a minimum word count or above a maximum link density are discarded, preventing low-signal pages (index pages, paywalls) from polluting the pool.
+- **Blocked fetches (paywalls / bot walls)** — many publishers (IEEE, ResearchGate, Elsevier, login walls) return 403/redirects so httpx cannot retrieve the PDF. When a fetch is blocked, the subagent **blocks via `interrupt()`** and asks the user to download it manually, showing the **URL, title, and the exact path to save to** (`Bibliography/_inbox/<id>.pdf`, `id` derived from the source URL). The CLI uses **auto-detection** on resume: after the user saves the files and presses Enter, the CLI checks each expected path and classifies automatically:
+  1. **Saved** (file present) — runs the PDF converter → pool → relevance gate under the already-known source id (deterministic match, no guessing).
+  2. **Unobtainable** (file absent) — the source is recorded as a **permanent coverage gap** and the run continues without it (the gap surfaces in the evaluator). Once declared unobtainable, the source is not re-requested on subsequent acquire iterations.
+  3. **Alternative URL** (model layer only, not surfaced by the current CLI) — the user provides an open-access URL; the agent fetches that instead.
 
   This is an **acquisition** block, not an editorial decision — see the autonomy note above.
 - **Dedup & source identity** — a source's **identity is its URL when it has one** (web pages and PDFs-by-URL): the id is `hash(url)`, and a same-URL re-fetch with changed content **updates the existing doc in place** (overwrite markdown, bump `retrieved_at`, re-embed), keeping one logical reference and one citation key. The `content_hash` is stored to *detect* whether a re-fetch actually changed; only **URL-less drop-in files** are identified by `hash(bytes)`. Dedup runs on the id before saving and before embedding — nothing is stored or embedded twice.
@@ -134,7 +135,7 @@ User-supplied PDFs may also be dropped into the Bibliography inbox (`Bibliograph
 ### Indexing
 
 - **Incremental upsert on save** — every newly saved markdown file is chunked, embedded, and upserted immediately, so the next iteration can retrieve it. To stay race-free under the parallel fan-out, **all writes go through a single serialized writer** (a process-wide lock/queue over one Chroma client; reads stay concurrent), and chunk ids are **deterministic** (`source_id` + chunk index) so the upsert is idempotent — two subagents finding the same source can't duplicate it. There is no runtime full rebuild; the only full reindex is the deliberate, offline embedding-model change.
-- **Reconcile on startup / resume** — runs once **before** the supervisor fan-out (so it never overlaps subagent writes), and standalone via the `research sync` CLI verb. It first processes anything in the Bibliography inbox (`_inbox/`: convert PDFs via marker, dedup, fold into the pool), then indexes any Bibliography markdown that is either new or whose `content_hash` has changed since it was last indexed (so a re-fetched web source with updated content is re-embedded, not silently stale). Recovers from interrupted runs and picks up manually-downloaded sources, consistent with the LangGraph checkpointer.
+- **Reconcile on startup / resume** — runs once **before** the supervisor fan-out (so it never overlaps subagent writes), and standalone via the `research sync` CLI verb. It first processes anything in the Bibliography inbox (`_inbox/`: convert PDFs via the configured converter, dedup, fold into the pool), then indexes any Bibliography markdown that is either new or whose `content_hash` has changed since it was last indexed (so a re-fetched web source with updated content is re-embedded, not silently stale). Recovers from interrupted runs and picks up manually-downloaded sources, consistent with the LangGraph checkpointer.
 - **Chunking** — markdown-header-aware splitting, then size-based sub-splitting (~1000 chars, ~200 overlap); the header path is kept as metadata.
 - **Chunk metadata** — `source_id` (pool identity / citation key), `content_hash`, `source_path`, `source_url`, `title`, `type` (web/pdf), plus `super_topic`/`sub_topic` of first discovery (provenance only). Citation mapping keys on `source_id`, not on the discovering topic, since a pooled source can be referenced by many runs.
 
@@ -209,5 +210,5 @@ writer → evaluate (report + sources ⇄ brief: coverage & support per guiding_
 - **Chroma** — embedded, persistent vector store for the RAG.
 - **Tavily** — web search and HTML→markdown extraction.
 - **httpx** — direct PDF downloads (paywalled/bot-walled fetches fall back to a manual-download interrupt).
-- **marker** — PDF→markdown conversion (OCR + LLM refinement).
+- **pymupdf4llm** — default PDF→markdown converter (fast, no extra dependencies). **marker** (OCR + LLM refinement) is available as an optional extra for higher-quality conversion; a remote converter service is also supported.
 - A **local RAG** over the Bibliography markdown for reusing already-gathered sources.

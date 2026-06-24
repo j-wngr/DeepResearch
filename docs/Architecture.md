@@ -17,8 +17,8 @@ Guiding invariants (see DesignBrief for rationale):
 
 - **Process model** — one foreground CLI invocation per command. The graph runs until it reaches an `interrupt()` or terminates. On interrupt the process may exit; state persists in the checkpointer under the slug.
 - **Entry points** (CLI verbs):
-  - `research run "<question>"` — start a new run; derives the slug **up front from the raw question** (slugified title + short hash) and seeds the initial `ResearchState` (`question` + `slug`) before invoking the graph, so a `thread_id` exists before the first interrupt. The slug is opaque and never changes, even if clarify/approval reword the question.
-  - `research resume <slug>` — reattach to a thread and answer the pending interrupt (editorial or acquisition).
+  - `research run "<question>"` — start a new run; derives the slug **up front from the raw question** (slugified title + short hash) and seeds the initial `ResearchState` (`question` + `slug`) before invoking the graph, so a `thread_id` exists before the first interrupt. The slug is opaque and never changes, even if clarify/approval reword the question. Runs an embed-model pre-flight check (`endpoints.check_embed_model`) before entering the graph and exits with a clear error if the configured model is not available on the Ollama host.
+  - `research resume <slug>` — reattach to a thread and answer the pending interrupt (editorial or acquisition). Also runs the embed-model pre-flight check on startup.
   - `research sync` — standalone: reconcile `Bibliography/_inbox/` (convert/dedup/fold into the pool, index) without starting research. The same reconcile also runs automatically at the start of every `run`/`resume`, before fan-out.
   - `research list` / `research status <slug>` — inspect threads (optional, nice-to-have).
 - **Interrupt handling** — the CLI renders the pending interrupt payload (clarify questions, brief for approval, follow-ups, or a batch of blocked downloads) and collects the response, then calls the graph with a `Command(resume=...)`. Concurrent acquisition interrupts arrive as a batch (resume map keyed by interrupt id).
@@ -113,7 +113,7 @@ Note the deliberate **state-schema isolation** (§10): full document bodies neve
 
 - `Brief { question, slug, thread_id, subtopics: list[SubTopic] }`
 - `SubTopic { slug, title, scope, guiding_questions: list[str], seed_queries: list[str] = [], status: Literal["pending","active","done","isolated"], dirty: bool = False }` — `dirty` marks new/changed sub-topics for incremental autonomous re-runs (#4).
-- `SourceRef { id, type: Literal["web","pdf"], url | None, title, source_path, retrieved_at, content_hash }` — `id` = `hash(url)` whenever a URL exists (web pages **and** PDFs-by-URL), else `hash(bytes)` for URL-less drop-ins. `content_hash` is always stored separately (dedup / change-detection). `id` is the citation key.
+- `SourceRef { id, type: Literal["web","pdf"], url | None, title, source_path, retrieved_at, content_hash, doi: str | None }` — `id` = `hash(url)` whenever a URL exists (web pages **and** PDFs-by-URL), else `hash(bytes)` for URL-less drop-ins. `content_hash` is always stored separately (dedup / change-detection). `doi` is auto-extracted from the markdown body on save (best-effort; `None` when absent). `id` is the citation key.
 - `Citation { source_id, claim, supporting_quote | None }`
 - `EvidenceExtract { source_id, points: list[EvidencePoint] }`; `EvidencePoint { claim, quote }` — distilled at gate time from the full document; the compression unit the loop and writer carry instead of full bodies.
 - `SubReport { subtopic_slug, body, citations: list[Citation], shortfall: str | None }`
@@ -151,7 +151,8 @@ src/deepresearch/
   sources/
     pool.py         # central content-addressed pool; ids, dedup, save
     web.py          # Tavily search + extract -> markdown
-    pdf.py          # httpx fetch, blocked-fetch interrupt, marker convert
+    pdf.py          # httpx fetch, blocked-fetch interrupt, pluggable convert (pymupdf4llm/marker/remote)
+    quality.py      # word-count + link-density pre-filter for web extracts
     inbox.py        # _inbox reconcile
   gate.py           # full-document relevance gate + verdict cache
   citations.py      # key resolution, merge, global renumber
@@ -178,8 +179,8 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
   - `pool.save_web(markdown, url, meta) -> SourceRef`: `id = hash(url)`; write `_sources/<id>.md` (+frontmatter).
   - `pool.save_pdf(pdf_bytes, markdown, url, meta) -> SourceRef`: `id = hash(url)` if `url` else `hash(pdf_bytes)`; write `_sources/pdfs/<id>.pdf` **and** `_sources/<id>.md` under the same id.
   - `pool.get(id) -> full markdown`. Both savers dedup before writing.
-- `web.search(query) -> list[SearchHit]` where `SearchHit { url, title, snippet }`; `web.extract(url) -> markdown` (Tavily). Web id = `hash(url)`; re-fetch updates in place.
-- `pdf.fetch(url) -> path | Blocked`: httpx download; on 403/login-wall returns `Blocked`, which the subagent turns into an **acquisition `interrupt()`** carrying `{url, title, save_path=_inbox/<id>.pdf}` with `id = hash(url)` — nameable before the bytes exist (#2). Resume responses: saved-at-path | unobtainable(gap) | alternative-url. `pdf.convert(path) -> markdown` via marker.
+- `web.search(query) -> list[SearchHit]` where `SearchHit { url, title, snippet }`; `web.extract(url) -> markdown` (Tavily, with a configurable inter-request delay). Web id = `hash(url)`; re-fetch updates in place. Extracted markdown is passed through a **quality pre-filter** (`sources/quality.py`) before save: pages below `min_source_words` (default 150) or above `max_link_density` (default 0.5) are silently discarded.
+- `pdf.fetch(url) -> path | Blocked`: httpx download; on 403/login-wall returns `Blocked`, which the subagent turns into an **acquisition `interrupt()`** carrying `{url, title, save_path=_inbox/<id>.pdf}` with `id = hash(url)` — nameable before the bytes exist (#2). On resume the CLI auto-detects whether the file was placed at the expected path: present → `saved`; absent → `unobtainable` (permanent gap). The `alternative` response kind (user pastes an open-access URL) is supported at the model layer but not surfaced by the current CLI. `pdf.convert(path) -> markdown` via **pymupdf4llm** (default, `PDF_CONVERTER=pymupdf`), optional **marker** (`PDF_CONVERTER=marker`, requires `uv sync --extra ocr`), or a **remote converter service** (`PDF_CONVERTER=remote`, `PDF_CONVERTER_URL=...`).
 - `inbox.reconcile()`: convert/dedup/fold dropped PDFs into the pool.
 
 ### 6.3 Relevance gate (`gate.py`)
@@ -225,8 +226,10 @@ Layered: env vars > config file > defaults. Settings:
 
 - `ollama_base_url`, optional separate `embed_base_url` (defaults to `ollama_base_url`), and optional `ollama_api_key` for authenticated/cloud hosts.
 - Model tiers (`model_fast`, `model_long`, `model_writer`) and `embed_model`.
-- `tavily_api_key` — **from environment only**, never persisted.
 - Paths: `bibliography_dir` (default `./Bibliography`), `output_dir` (default `./research`), `state_dir` (default `./.deepresearch`).
+- PDF converter: `pdf_converter` (`pymupdf` | `marker` | `remote`, default `pymupdf`); `pdf_converter_url` and `pdf_converter_api_key` for the remote mode.
+- Source quality: `min_source_words` (default 150), `max_link_density` (default 0.5) — web-page pre-filter thresholds.
+- Tavily: `tavily_api_key` — **from environment only**, never persisted; `tavily_request_delay` (default 1.0 s) — inter-request pause to avoid rate-limiting.
 - Caps/knobs: `max_concurrency`, `subagent_max_iterations`, `auto_round_cap`, `max_rounds`, `subtopics_target` (3–7), `subtopics_ceiling` (12), `retrieval_k`, `similarity_floor`, `provenance_boost`, `doc_size_cap`, `writer_max_revisions`.
 
 Concrete numeric defaults are chosen at implementation time against the real Ollama host (DesignBrief defers them deliberately).
@@ -244,11 +247,11 @@ Long multi-round runs and full-document gating make the token budget a first-ord
 - **Write** (persist outside the window). *Cross-session:* the source pool + global Chroma collection are durable semantic memory; the relevance-verdict cache is procedural memory; briefs/reports are written to the outputs tree. *Intra-task:* each subagent keeps a **scratchpad** (`SubAgentState.scratchpad`) of findings, tried queries, and open questions, checkpointed so the ReAct loop never depends on raw message history.
 - **Select** (retrieve only what's needed). The RAG candidate finder *is* selective retrieval — pull relevant sources, not the whole library — and the relevance gate then loads full documents only for the few candidates (top-k → floor → provenance re-rank, §6.1). Verdict-cache lookups select prior judgments instead of re-reading. (Tool-selection-via-RAG is not needed — the toolset is small and fixed.)
 - **Compress** (keep only essential tokens). At whitelist time the gate emits **distilled evidence** (`EvidenceExtract`: sub-topic-relevant claims with verbatim quotes), cached with the verdict. The subagent synthesis and the writer work from distilled evidence, not full bodies; raw tool outputs (search results, fetched document text) are **dropped from the trajectory once distilled** (trajectory compaction). The full-document grounding invariant is preserved exactly where it counts: final **groundedness verification re-checks each claim against the full source** (§6.4), so compression accelerates drafting without weakening citations.
-- **Isolate** (split context across subsystems). The multi-agent fan-out is isolation by construction — each subagent has its own window, mandate, and tools and never sees sibling state. **State-schema isolation** is deliberate: the subagent LLM is shown only its mandate + scratchpad + distilled evidence + current step, never the global pool, the full message history, or other sub-topics. Token-heavy objects (full markdown, PDFs) live on disk in the pool and are referenced by `source_id`, loaded only at the gate and final verification, never parked in graph state. PDF conversion (marker) and embeddings run out-of-process on their own hosts.
+- **Isolate** (split context across subsystems). The multi-agent fan-out is isolation by construction — each subagent has its own window, mandate, and tools and never sees sibling state. **State-schema isolation** is deliberate: the subagent LLM is shown only its mandate + scratchpad + distilled evidence + current step, never the global pool, the full message history, or other sub-topics. Token-heavy objects (full markdown, PDFs) live on disk in the pool and are referenced by `source_id`, loaded only at the gate and final verification, never parked in graph state. PDF conversion (pymupdf4llm by default; marker or remote as alternatives) and embeddings run out-of-process on their own hosts.
 
 ## 11. External dependencies
 
-`langgraph`, `langchain-core`, `langchain-ollama` (chat + embeddings), `chromadb`, `tavily-python`, `marker-pdf`, `httpx`, `pydantic`, a CLI lib (`typer`), all via `uv`. Integration seams isolated per subsystem so each is independently testable with fakes.
+`langgraph`, `langchain-core`, `langchain-ollama` (chat + embeddings), `chromadb`, `tavily-python`, `pymupdf4llm` (default PDF converter), `httpx`, `pydantic`, a CLI lib (`typer`), all via `uv`. `marker-pdf` is an optional extra (`uv sync --extra ocr`) for the higher-quality OCR converter mode. Integration seams isolated per subsystem so each is independently testable with fakes.
 
 ## 12. Dev workflow
 
