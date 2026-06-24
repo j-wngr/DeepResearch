@@ -12,7 +12,7 @@ from deepresearch.models import Blocked, SearchHit
 from deepresearch.paths import hash_bytes, hash_url
 from deepresearch.rag.index import reconcile as rag_reconcile
 from deepresearch.rag.store import ChromaStore
-from deepresearch.sources import extract, fetch, get, inbox_reconcile, pool, remove, save_pdf, save_web
+from deepresearch.sources import extract, extract_doi, fetch, get, inbox_reconcile, pool, remove, save_pdf, save_web
 from deepresearch.sources import search as web_search
 
 
@@ -702,3 +702,52 @@ def test_rag_reconcile_with_inbox(tmp_workspace):
     assert (bib_dir / "_sources" / f"{pdf_id}.md").exists()
     assert web_id in store.list_source_ids()
     assert pdf_id in store.list_source_ids()
+
+
+@pytest.mark.unit
+def test_extract_doi_finds_doi():
+    text = "See https://doi.org/10.1038/s41586-021-03819-2 for details."
+    assert extract_doi(text) == "10.1038/s41586-021-03819-2"
+
+
+@pytest.mark.unit
+def test_extract_doi_strips_trailing_punctuation():
+    assert extract_doi("Published (10.1145/3292500.3330919).") == "10.1145/3292500.3330919"
+
+
+@pytest.mark.unit
+def test_extract_doi_returns_none_when_absent():
+    assert extract_doi("No DOI here at all.") is None
+
+
+@pytest.mark.unit
+def test_save_web_extracts_doi(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    markdown = "# Paper\n\nDOI: 10.1109/CVPR.2020.00022\n\nBody text.\n"
+    ref = save_web(markdown, "https://example.com/paper", "Paper", bib_dir)
+    assert ref.doi == "10.1109/CVPR.2020.00022"
+
+
+@pytest.mark.unit
+def test_save_web_doi_none_when_absent(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref = save_web("# Blog\n\nNo doi here.\n", "https://example.com/blog", "Blog", bib_dir)
+    assert ref.doi is None
+
+
+@pytest.mark.unit
+def test_save_pdf_extracts_doi(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    markdown = "# Study\n\nhttps://doi.org/10.1016/j.neuron.2021.01.001\n\nContent.\n"
+    ref = save_pdf(b"%PDF-fake", markdown, "https://example.com/study.pdf", "Study", bib_dir)
+    assert ref.doi == "10.1016/j.neuron.2021.01.001"
+
+
+@pytest.mark.unit
+def test_doi_persisted_in_frontmatter(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    markdown = "# Paper\n\n10.1145/3292500.3330919\n\nBody.\n"
+    ref = save_web(markdown, "https://example.com/doi-paper", "Paper", bib_dir)
+    assert ref.doi is not None
+    loaded = pool.get_ref(ref.id, bib_dir)
+    assert loaded.doi == ref.doi

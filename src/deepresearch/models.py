@@ -70,6 +70,7 @@ class SourceRef(BaseModel):
     id: str
     type: Literal["web", "pdf"]
     url: str | None = None
+    doi: str | None = None
     title: str
     source_path: str
     retrieved_at: str

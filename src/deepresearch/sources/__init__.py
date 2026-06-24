@@ -3,7 +3,7 @@
 from deepresearch.sources import quality
 from deepresearch.sources.inbox import reconcile as inbox_reconcile
 from deepresearch.sources.pdf import convert, fetch
-from deepresearch.sources.pool import get, remove, save_pdf, save_web
+from deepresearch.sources.pool import extract_doi, get, remove, save_pdf, save_web
 from deepresearch.sources.web import extract, search
 
 __all__ = [
@@ -17,4 +17,5 @@ __all__ = [
     "fetch",
     "convert",
     "inbox_reconcile",
+    "extract_doi",
 ]

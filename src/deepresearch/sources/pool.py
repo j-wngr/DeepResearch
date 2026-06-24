@@ -2,12 +2,24 @@
 
 import datetime
 import hashlib
+import re
 from pathlib import Path
 
 import yaml
 
 from deepresearch.models import SourceRef
 from deepresearch.paths import hash_bytes, hash_url
+
+_DOI_RE = re.compile(r'\b(10\.\d{4,}(?:\.\d+)*/\S+)', re.IGNORECASE)
+
+
+def extract_doi(text: str) -> str | None:
+    """Return the first DOI found in text, or None."""
+    m = _DOI_RE.search(text)
+    if m is None:
+        return None
+    # Strip trailing punctuation that is unlikely to be part of the DOI
+    return m.group(1).rstrip(".,;:)'\">")
 
 _FRONTMATTER_DELIM = "---"
 
@@ -21,6 +33,7 @@ def _write_markdown_with_frontmatter(path: Path, source_ref: SourceRef, markdown
         "id": source_ref.id,
         "type": source_ref.type,
         "url": source_ref.url,
+        "doi": source_ref.doi,
         "title": source_ref.title,
         "source_path": source_ref.source_path,
         "retrieved_at": source_ref.retrieved_at,
@@ -52,11 +65,13 @@ def _source_ref(
     title: str,
     source_path: str,
     content_hash: str,
+    doi: str | None = None,
 ) -> SourceRef:
     return SourceRef(
         id=source_id,
         type=source_type,
         url=url,
+        doi=doi,
         title=title,
         source_path=source_path,
         retrieved_at=datetime.datetime.now(datetime.UTC).isoformat(),
@@ -85,6 +100,7 @@ def save_web(markdown: str, url: str, title: str, bibliography_dir: Path) -> Sou
         title=title,
         source_path=f"_sources/{source_id}.md",
         content_hash=content_hash,
+        doi=extract_doi(markdown),
     )
     _write_markdown_with_frontmatter(md_path, source_ref, markdown)
     return source_ref
@@ -130,6 +146,7 @@ def save_pdf(
         title=title,
         source_path=f"_sources/{source_id}.md",
         content_hash=content_hash,
+        doi=extract_doi(markdown),
     )
     _write_markdown_with_frontmatter(md_path, source_ref, markdown)
     return source_ref
