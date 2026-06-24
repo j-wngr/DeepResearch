@@ -73,7 +73,8 @@ def _build_config(
         configurable["tavily_client"] = tavily_client
     if pdf_client is not None:
         configurable["pdf_client"] = pdf_client
-    return {"configurable": configurable, "thread_id": "phase-six-test-slug"}
+    configurable["thread_id"] = "phase-six-test-slug"
+    return {"configurable": configurable}
 
 
 def _run_graph_interactive(graph, initial_state, config, resume_sequence):
@@ -292,10 +293,10 @@ def _run_happy_graph(tmp_workspace):
         }
     )
     config = _build_config(
-        bib_dir, state_dir, out_dir, fake_chat, retrieve_fn=retrieve_fn, store={}
+        bib_dir, state_dir, out_dir, fake_chat, retrieve_fn=retrieve_fn
     )
     run_slug = slug("Phase six happy path")
-    config["thread_id"] = run_slug
+    config["configurable"]["thread_id"] = run_slug
 
     with create_checkpointer(state_dir) as checkpointer:
         graph = build_graph(checkpointer=checkpointer)

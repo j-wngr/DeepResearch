@@ -27,6 +27,14 @@ Autoencoder-based models learn a compact representation of normal operation.
 Anomalies produce elevated reconstruction errors that threshold-based detectors
 can flag. Variational autoencoders and their convolutional variants handle
 multivariate sensor streams with correlated features.
+
+## Threshold Selection
+
+Choosing an appropriate anomaly threshold requires careful calibration on
+held-out normal data. Statistical approaches such as extreme value theory allow
+threshold selection without requiring fault examples. Adaptive thresholds that
+track seasonal or load-dependent drift in motor behaviour improve robustness in
+continuously varying operating conditions.
 """
 
 

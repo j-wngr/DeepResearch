@@ -530,7 +530,24 @@ def test_web_gap_fill_when_rag_only_returns_irrelevant(tmp_workspace, monkeypatc
 
     # The web search yields a relevant source.
     web_url = "https://example.com/fasting"
-    web_content = "Intermittent fasting improves insulin sensitivity in trials."
+    web_content = (
+        "Intermittent fasting improves insulin sensitivity in randomised controlled trials. "
+        "Time-restricted eating protocols reduce fasting glucose levels and improve markers "
+        "of metabolic health across diverse study populations. Mechanisms include enhanced "
+        "autophagy, reduced oxidative stress, and improved mitochondrial efficiency. "
+        "Studies comparing sixteen-hour fasting windows against control diets report "
+        "statistically significant reductions in HbA1c and fasting insulin after twelve "
+        "weeks of adherence, with benefits sustained at six-month follow-up. "
+        "Caloric restriction combined with time-restricted feeding further amplifies these "
+        "metabolic improvements, particularly in individuals with pre-diabetes or metabolic "
+        "syndrome. The hormonal response to fasting includes increased glucagon secretion, "
+        "decreased insulin levels, and elevated growth hormone, collectively promoting "
+        "lipolysis and ketogenesis. These adaptations improve cellular energy metabolism "
+        "and reduce chronic low-grade inflammation, which is a key driver of insulin "
+        "resistance. Long-term adherence studies indicate that intermittent fasting is as "
+        "effective as continuous caloric restriction for weight management and metabolic "
+        "health improvement, with comparable dropout rates between the two approaches."
+    )
     web_id = hash_url(web_url)
 
     fake_tavily = FakeTavily(

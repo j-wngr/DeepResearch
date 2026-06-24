@@ -9,6 +9,7 @@ import pytest
 from fakes.embeddings import FakeEmbeddings
 
 from deepresearch.models import SourceRef
+from deepresearch.paths import hash_url
 from deepresearch.rag.index import chunk_markdown, ingest, reconcile
 from deepresearch.rag.retrieve import candidates
 from deepresearch.rag.store import ChromaStore
@@ -405,21 +406,23 @@ def test_store_delete_removes_chunks(tmp_workspace, embeddings):
     state_dir = tmp_workspace["state_dir"]
     store = ChromaStore(state_dir, embeddings.embed_query)
 
+    url = "http://example.com/delete-me"
+    src_id = hash_url(url)
     ref = SourceRef(
-        id="del-src",
+        id=src_id,
         type="web",
-        url="http://example.com",
+        url=url,
         title="Delete Me",
-        source_path="_sources/del-src.md",
+        source_path=f"_sources/{src_id}.md",
         retrieved_at="2024-01-01T00:00:00+00:00",
         content_hash="abc",
     )
-    seed_source(bib_dir, "del-src", "# Delete Me\n\nContent that will be removed.\n")
+    seed_source(bib_dir, src_id, "# Delete Me\n\nContent that will be removed.\n")
     ingest(ref, store, embeddings, bib_dir)
-    assert "del-src" in store.list_source_ids()
+    assert src_id in store.list_source_ids()
 
-    store.delete("del-src")
-    assert "del-src" not in store.list_source_ids()
+    store.delete(src_id)
+    assert src_id not in store.list_source_ids()
 
 
 @pytest.mark.unit

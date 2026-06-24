@@ -85,8 +85,8 @@ def _config(tmp_workspace, fake_chat, retrieve_fn=None, *, slug="e2e-run", tavil
             "retrieve_fn": retrieve_fn,
             "tavily_client": tavily,
             "pdf_client": pdf,
+            "thread_id": slug,
         },
-        "thread_id": slug,
     }
 
 
@@ -570,7 +570,24 @@ def test_e2e_scenario_e_cross_run_rag_reuse_full_graph(tmp_workspace, monkeypatc
     ]
     tavily1 = FakeTavily(
         search_results={"shared query": [SearchHit(url=url, title="Reusable", snippet="shared")]},
-        extracts={url: "Reusable quote for shared query."},
+        extracts={url: (
+            "Reusable content about permanent magnet synchronous motors and anomaly "
+            "detection. This source covers feature extraction from phase current signals, "
+            "stator current signatures under eccentricity faults, bearing degradation "
+            "patterns, and demagnetisation indicators. Autoencoder-based models learn a "
+            "compact representation of normal motor operation. Reconstruction errors flag "
+            "anomalies with high precision across a variety of load conditions. "
+            "Variational autoencoders handle multivariate sensor streams with correlated "
+            "features, improving detection rates for incipient faults before they develop "
+            "into catastrophic failures. Threshold selection methods based on extreme value "
+            "theory allow deployment without labelled fault data, which is rarely available "
+            "in industrial settings. The models are evaluated on benchmark datasets covering "
+            "bearing faults, rotor eccentricity, and inter-turn short-circuit faults, "
+            "achieving high area-under-curve scores while maintaining low false-positive "
+            "rates in continuous monitoring scenarios. Online learning extensions allow "
+            "the detector to adapt as motor characteristics change over time due to ageing "
+            "or replacement of components, maintaining detection accuracy without retraining."
+        )},
     )
     fake1 = FakeChat(
         {
