@@ -106,7 +106,9 @@ def _check_acquire_files(requests: list[dict]) -> list[dict]:
     missing = []
     for req in requests:
         if Path(req["save_path"]).exists():
-            responses.append({"source_id": req["source_id"], "kind": "saved", "save_path": req["save_path"]})
+            responses.append(
+                {"source_id": req["source_id"], "kind": "saved", "save_path": req["save_path"]}
+            )
             found.append(req.get("title") or req["source_id"])
         else:
             responses.append({"source_id": req["source_id"], "kind": "unobtainable"})
@@ -180,7 +182,9 @@ def _run_interactive(graph, input_state, config):
         interrupts = result.get("__interrupt__", [])
         if not interrupts:
             typer.echo("\nResearch run complete.")
-            typer.echo(f"Output: {config['configurable']['output_dir']}/{config['configurable']['thread_id']}/")
+            output_dir = config["configurable"]["output_dir"]
+            thread_id = config["configurable"]["thread_id"]
+            typer.echo(f"Output: {output_dir}/{thread_id}/")
             return result
         for interrupt_data in interrupts:
             _display_interrupt(interrupt_data.value)

@@ -102,7 +102,9 @@ def check_embed_model(cfg: Config, *, _tags: TagsFetcher = _fetch_tags) -> None:
     base_url = str(cfg.embed_base_url).rstrip("/")
     if "ollama.com" in base_url:
         return
-    headers: dict | None = {"Authorization": f"Bearer {cfg.ollama_api_key}"} if cfg.ollama_api_key else None
+    headers: dict | None = (
+        {"Authorization": f"Bearer {cfg.ollama_api_key}"} if cfg.ollama_api_key else None
+    )
     models = _tags(base_url, headers)
     if models is None:
         return  # unreachable — resolve_ollama_endpoints already warned

@@ -91,6 +91,19 @@ def _blocked_tavily(url: str, title: str = "Paywalled PDF") -> FakeTavily:
     )
 
 
+class RetryTavily(FakeTavily):
+    def __init__(self, blocked_url: str, open_url: str, open_markdown: str):
+        super().__init__(extracts={open_url: open_markdown})
+        self.blocked_url = blocked_url
+        self.open_url = open_url
+
+    def search(self, query: str) -> list[SearchHit]:
+        self._search_count += 1
+        if self._search_count <= 2:
+            return [SearchHit(url=self.blocked_url, title="Blocked", snippet="blocked")]
+        return [SearchHit(url=self.open_url, title="Open", snippet="open")]
+
+
 @pytest.mark.integration
 def test_blocked_fetch_raises_acquisition_interrupt_with_save_path(tmp_workspace, monkeypatch):
     monkeypatch.setenv("SIMILARITY_FLOOR", "0.0")
@@ -186,6 +199,47 @@ def test_unobtainable_creates_permanent_gap_no_whitelist(tmp_workspace, monkeypa
     assert "source unobtainable" in result["subreport"].shortfall
     assert "Could not obtain:" in result["subreport"].body
     assert source_id not in {citation.source_id for citation in result["subreport"].citations}
+    assert result["acquisition_gaps"]
+
+
+@pytest.mark.integration
+def test_unobtainable_gap_does_not_prevent_retry_with_open_source(tmp_workspace, monkeypatch):
+    monkeypatch.setenv("SIMILARITY_FLOOR", "0.0")
+    monkeypatch.setenv("MIN_SOURCE_WORDS", "1")
+    reset_config()
+    blocked_url = "https://example.com/paywalled.pdf"
+    open_url = "https://example.com/open"
+    open_id = hash_url(open_url)
+    blocked_id = hash_url(blocked_url)
+    fake_tavily = RetryTavily(blocked_url, open_url, "# Open\n\nRetry evidence.")
+    fake_pdf = FakePdf(blocked_urls={blocked_url})
+    fake_chat = FakeChat(
+        {
+            "gate": [_gate("Retry evidence.")],
+            "synth": [
+                "notes before retry",
+                "Draft without citation",
+                _quality(False, "missing"),
+                "notes after retry",
+                f"Retry answer [{open_id}]",
+                _quality(True),
+            ],
+        }
+    )
+    config = _config(tmp_workspace, fake_chat, fake_tavily, fake_pdf)
+
+    with create_checkpointer(tmp_workspace["state_dir"]) as checkpointer:
+        subgraph = build_subagent_subgraph(checkpointer=checkpointer)
+        subgraph.invoke(_initial_state(), config)
+        result = subgraph.invoke(
+            Command(
+                resume=[AcquisitionResponse(source_id=blocked_id, kind="unobtainable").model_dump()]
+            ),
+            config,
+        )
+
+    assert open_id in {ref.id for ref in result["whitelisted"]}
+    assert result["subreport"].shortfall is None
     assert result["acquisition_gaps"]
 
 

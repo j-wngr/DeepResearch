@@ -35,7 +35,7 @@ class Config:
         self.pdf_converter_api_key = self._get_str("PDF_CONVERTER_API_KEY", "")
         self.tavily_api_key = self._get_str("TAVILY_API_KEY", "")
         self.bibliography_dir = self._get_path("BIBLIOGRAPHY_DIR", "./Bibliography")
-        self.output_dir = self._get_path("OUTPUT_DIR", "./research")
+        self.output_dir = self._get_path("OUTPUT_DIR", "./Research")
         self.state_dir = self._get_path("STATE_DIR", "./.deepresearch")
         self.max_concurrency = self._get_int("MAX_CONCURRENCY", 2)
         # Phase 9 tuning: keep subagent loops bounded while allowing one retry pass.

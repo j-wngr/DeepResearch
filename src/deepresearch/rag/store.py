@@ -45,6 +45,23 @@ class ChromaStore:
                 documents=documents,
             )
 
+    def replace(self, source_id: str, chunks: list[dict]) -> None:
+        """Atomically replace all chunks for ``source_id`` with ``chunks``."""
+        ids = [c["id"] for c in chunks]
+        embeddings = [c["embedding"] for c in chunks]
+        metadatas = [c["metadata"] for c in chunks]
+        documents = [c["document"] for c in chunks]
+        with self._write_lock:
+            self._collection.delete(where={"source_id": source_id})
+            if not chunks:
+                return
+            self._collection.upsert(
+                ids=ids,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                documents=documents,
+            )
+
     def query(self, text: str, k: int) -> list[dict]:
         """Query the store and return matched chunks with distances."""
         vec = self._embedding_fn(text)

@@ -401,6 +401,49 @@ def test_reconcile_indexes_unindexed(tmp_workspace, embeddings):
 
 
 @pytest.mark.unit
+def test_reconcile_replaces_stale_chunks_when_source_shrinks(tmp_workspace, embeddings):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+    url = "https://example.com/changing"
+    long_body = "# Long\n\n" + " ".join(["old chunk text"] * 500)
+    ref = pool.save_web(long_body, url, "Changing", bib_dir)
+
+    reconcile(bib_dir, store, embeddings)
+    assert store.count() > 1
+
+    short_body = "# Short\n\nnew text only."
+    ref = pool.save_web(short_body, url, "Changing", bib_dir)
+    indexed = reconcile(bib_dir, store, embeddings)
+
+    assert indexed == 1
+    assert store.count() == len(chunk_markdown(short_body, ref.id))
+    assert store.collection.get(ids=[f"{ref.id}:1"])["ids"] == []
+
+
+@pytest.mark.unit
+def test_reconcile_preserves_source_ref_metadata(tmp_workspace, embeddings):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    state_dir = tmp_workspace["state_dir"]
+    store = ChromaStore(state_dir, embeddings.embed_query)
+    ref = pool.save_pdf(
+        b"%PDF fake",
+        "# PDF\n\nPreserved metadata.",
+        None,
+        "Preserved PDF",
+        bib_dir,
+    )
+
+    reconcile(bib_dir, store, embeddings)
+
+    metadata = store.collection.get(ids=[f"{ref.id}:0"], include=["metadatas"])["metadatas"][0]
+    assert metadata["source_id"] == ref.id
+    assert metadata["source_path"] == ref.source_path
+    assert metadata["title"] == "Preserved PDF"
+    assert metadata["type"] == "pdf"
+
+
+@pytest.mark.unit
 def test_store_delete_removes_chunks(tmp_workspace, embeddings):
     bib_dir = tmp_workspace["bibliography_dir"]
     state_dir = tmp_workspace["state_dir"]

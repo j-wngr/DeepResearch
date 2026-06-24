@@ -127,6 +127,39 @@ class TrackingFakeChat(FakeChat):
         return super().chat(role, messages)
 
 
+class SinglePassFakeChat(FakeChat):
+    def __init__(self, subtopics, sid_a, sid_b):
+        super().__init__(
+            {
+                "clarify": ['{"needs_clarification": false}', '{"approved": true}'],
+                "gate": [
+                    _gate(sid_a, "Alpha answer", "Alpha quote."),
+                    _gate(sid_b, "Beta answer", "Beta quote."),
+                ],
+                "writer": ['{"supported": true}', '{"supported": true}'],
+            }
+        )
+        self._subtopics = subtopics
+        self._sid_a = sid_a
+        self._sid_b = sid_b
+
+    def chat(self, role, messages):
+        if role != "synth" or not messages:
+            return super().chat(role, messages)
+        content = messages[0]["content"]
+        if "Decompose this research question" in content:
+            return json.dumps(self._subtopics)
+        if "Update the scratchpad" in content:
+            return "reflect a" if "Sub-topic: Alpha" in content else "reflect b"
+        if "Draft a sub-report" in content:
+            if "Sub-topic: Alpha" in content:
+                return f"Alpha answer [{self._sid_a}]."
+            return f"Beta answer [{self._sid_b}]."
+        if "Score this draft" in content:
+            return _quality()
+        return super().chat(role, messages)
+
+
 class RefinementFakeChat(TrackingFakeChat):
     def __init__(self, subtopics, sid_a, sid_b):
         super().__init__(
@@ -191,25 +224,7 @@ def test_e2e_scenario_a_happy_path_single_pass(tmp_workspace, monkeypatch):
             "seed_queries": ["beta"],
         },
     ]
-    fake = FakeChat(
-        {
-            "clarify": ['{"needs_clarification": false}', '{"approved": true}'],
-            "synth": [
-                json.dumps(subs),
-                "reflect a",
-                f"Alpha answer [{sid_a}].",
-                _quality(),
-                "reflect b",
-                f"Beta answer [{sid_b}].",
-                _quality(),
-            ],
-            "gate": [
-                _gate(sid_a, "Alpha answer", "Alpha quote."),
-                _gate(sid_b, "Beta answer", "Beta quote."),
-            ],
-            "writer": ['{"supported": true}', '{"supported": true}'],
-        }
-    )
+    fake = SinglePassFakeChat(subs, sid_a, sid_b)
     config = _config(
         tmp_workspace, fake, lambda q, _s: [sid_a] if "Alpha" in q or "alpha" in q else [sid_b]
     )

@@ -22,7 +22,6 @@ from langgraph.types import interrupt
 
 from deepresearch import acquisition
 from deepresearch.config import get_config
-from deepresearch.sources import quality
 from deepresearch.llm import extract_json
 from deepresearch.models import (
     AcquisitionRequest,
@@ -37,6 +36,7 @@ from deepresearch.models import (
     SubTopic,
 )
 from deepresearch.paths import output_path
+from deepresearch.sources import quality
 from deepresearch.state import SubAgentState
 
 logger = logging.getLogger("deepresearch.nodes.subagent")
@@ -156,7 +156,11 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
             hits = web.search(query, tavily_client)
             for hit in hits:
                 source_id = _source_id_from_hit(hit)
-                if source_id in seen_ids or source_id in whitelisted_ids or source_id in unobtainable_ids:
+                if (
+                    source_id in seen_ids
+                    or source_id in whitelisted_ids
+                    or source_id in unobtainable_ids
+                ):
                     continue
                 source_ref = _fetch_from_search_hit(
                     hit,
@@ -412,8 +416,8 @@ def _synthesize_node(state: SubAgentState, config: RunnableConfig) -> dict:
     # Build an explicit citation key table so the LLM can emit citations that
     # directly reference the stable source ids, improving downstream resolution.
     citation_keys: list[str] = []
-    for idx, ref in enumerate(state["whitelisted"], start=1):
-        citation_keys.append(f"[{ref.id}] — {ref.title} (index {idx})")
+    for ref in state["whitelisted"]:
+        citation_keys.append(f"[{ref.id}] — {ref.title}")
     keys_text = "\n".join(citation_keys) if citation_keys else "(no whitelisted sources yet)"
 
     prompt = (
@@ -498,18 +502,6 @@ def _quality_gate_node(state: SubAgentState, config: RunnableConfig) -> dict:
         # Also emit to parent's subreports channel (keyed by subtopic slug)
         # so the merge_subreports reducer accumulates results from all subagents.
         updates["subreports"] = {sub.slug: subreport}
-    elif gaps:
-        shortfall = _shortfall_with_gaps(result.reason, gaps)
-        body = _append_gap_paragraph(draft, gaps)
-        subreport = SubReport(
-            subtopic_slug=sub.slug,
-            body=body,
-            citations=_build_citations(state["evidence"], state["whitelisted"]),
-            shortfall=shortfall,
-        )
-        _write_sub_report(subreport, output_dir, state["slug"])
-        updates["subreport"] = subreport
-        updates["subreports"] = {sub.slug: subreport}
     elif state["iteration"] < cfg.subagent_max_iterations:
         # Increment the iteration counter so the next acquire cycle is tracked.
         updates["iteration"] = state["iteration"] + 1
@@ -571,17 +563,26 @@ def _build_citations(
     evidence: list[EvidenceExtract],
     whitelisted: list[SourceRef],
 ) -> list[Citation]:
-    """Map each evidence point to a Citation carrying its supporting quote."""
-    citations: list[Citation] = []
+    """Build citations in whitelisted-source order for numeric fallback mapping."""
+    first_point_by_source = {}
     for extract in evidence:
         for point in extract.points:
-            citations.append(
-                Citation(
-                    source_id=extract.source_id,
-                    claim=point.claim,
-                    supporting_quote=point.quote,
-                )
+            first_point_by_source.setdefault(extract.source_id, point)
+
+    citations: list[Citation] = []
+    seen: set[str] = set()
+    for ref in whitelisted:
+        if ref.id in seen:
+            continue
+        seen.add(ref.id)
+        point = first_point_by_source.get(ref.id)
+        citations.append(
+            Citation(
+                source_id=ref.id,
+                claim=point.claim if point is not None else "",
+                supporting_quote=point.quote if point is not None else None,
             )
+        )
     return citations
 
 
@@ -635,7 +636,6 @@ def _route_after_quality_gate(state: SubAgentState) -> str:
     # has been emitted and the cap has not been reached.
     if (
         state.get("subreport") is None
-        and not state.get("acquisition_gaps")
         and state["iteration"] <= cfg.subagent_max_iterations
     ):
         return "loop"
@@ -697,11 +697,23 @@ def build_subagent_subgraph(checkpointer=None):
     builder.add_node("quality_gate", _with_isolation(_quality_gate_node))
 
     builder.add_edge(START, "plan")
-    builder.add_conditional_edges("plan", _continue_or_end("acquire"), {"acquire": "acquire", "end": END})
+    builder.add_conditional_edges(
+        "plan", _continue_or_end("acquire"), {"acquire": "acquire", "end": END}
+    )
     builder.add_conditional_edges("acquire", _continue_or_end("gate"), {"gate": "gate", "end": END})
-    builder.add_conditional_edges("gate", _continue_or_end("reflect"), {"reflect": "reflect", "end": END})
-    builder.add_conditional_edges("reflect", _continue_or_end("synthesize"), {"synthesize": "synthesize", "end": END})
-    builder.add_conditional_edges("synthesize", _continue_or_end("quality_gate"), {"quality_gate": "quality_gate", "end": END})
+    builder.add_conditional_edges(
+        "gate", _continue_or_end("reflect"), {"reflect": "reflect", "end": END}
+    )
+    builder.add_conditional_edges(
+        "reflect",
+        _continue_or_end("synthesize"),
+        {"synthesize": "synthesize", "end": END},
+    )
+    builder.add_conditional_edges(
+        "synthesize",
+        _continue_or_end("quality_gate"),
+        {"quality_gate": "quality_gate", "end": END},
+    )
     builder.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,

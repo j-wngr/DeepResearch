@@ -12,7 +12,17 @@ from deepresearch.models import Blocked, SearchHit
 from deepresearch.paths import hash_bytes, hash_url
 from deepresearch.rag.index import reconcile as rag_reconcile
 from deepresearch.rag.store import ChromaStore
-from deepresearch.sources import extract, extract_doi, fetch, get, inbox_reconcile, pool, remove, save_pdf, save_web
+from deepresearch.sources import (
+    extract,
+    extract_doi,
+    fetch,
+    get,
+    inbox_reconcile,
+    pool,
+    remove,
+    save_pdf,
+    save_web,
+)
 from deepresearch.sources import search as web_search
 
 
@@ -157,7 +167,13 @@ def test_remove_web_source(tmp_workspace):
 @pytest.mark.unit
 def test_remove_pdf_source(tmp_workspace):
     bib_dir = tmp_workspace["bibliography_dir"]
-    ref = save_pdf(b"pdf bytes", "# Paper\n\nText.\n", "http://example.com/paper.pdf", "Paper", bib_dir)
+    ref = save_pdf(
+        b"pdf bytes",
+        "# Paper\n\nText.\n",
+        "http://example.com/paper.pdf",
+        "Paper",
+        bib_dir,
+    )
     md_path = bib_dir / "_sources" / f"{ref.id}.md"
     pdf_path = bib_dir / "_sources" / "pdfs" / f"{ref.id}.pdf"
 
@@ -243,7 +259,6 @@ def test_throttle_sleeps_when_called_too_soon(monkeypatch):
     import deepresearch.sources.web as web_mod
 
     slept: list[float] = []
-    calls: list[float] = []
     t = 0.0
 
     def fake_monotonic():
@@ -431,6 +446,7 @@ def test_convert_dispatches_to_marker(monkeypatch):
 def test_convert_marker_missing_extra(monkeypatch):
     """_convert_marker raises a clear ImportError when marker-pdf is not installed."""
     import sys
+
     from deepresearch.sources.pdf import _convert_marker
 
     # Simulate marker not being installed
@@ -483,6 +499,7 @@ def test_convert_remote_missing_url(monkeypatch):
 def test_convert_remote_posts_pdf_and_returns_markdown(monkeypatch, tmp_path):
     """_convert_remote POSTs the file and extracts markdown from the JSON response."""
     import httpx
+
     from deepresearch.config import reset_config
     from deepresearch.sources.pdf import _convert_remote
 
@@ -518,6 +535,7 @@ def test_convert_remote_posts_pdf_and_returns_markdown(monkeypatch, tmp_path):
 def test_convert_remote_sends_auth_header(monkeypatch, tmp_path):
     """_convert_remote includes Authorization header when PDF_CONVERTER_API_KEY is set."""
     import httpx
+
     from deepresearch.config import reset_config
     from deepresearch.sources.pdf import _convert_remote
 
@@ -606,7 +624,12 @@ def test_inbox_reconcile_hash_url_filename(tmp_workspace):
 class _MockHttpxResponse:
     """Minimal httpx response stand-in for PDF fetch tests."""
 
-    def __init__(self, status_code: int = 200, content: bytes = b"", content_type: str = "application/pdf"):
+    def __init__(
+        self,
+        status_code: int = 200,
+        content: bytes = b"",
+        content_type: str = "application/pdf",
+    ):
         self.status_code = status_code
         self.content = content
         self.headers = {"content-type": content_type}
@@ -621,8 +644,9 @@ class _MockHttpxResponse:
 @pytest.mark.unit
 def test_pdf_client_fetch_empty_response_is_blocked(monkeypatch):
     """HttpxPdfClient.fetch returns Blocked when the server sends an empty body."""
-    from deepresearch.sources.pdf import HttpxPdfClient
     import httpx
+
+    from deepresearch.sources.pdf import HttpxPdfClient
 
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b""))
     result = HttpxPdfClient().fetch("http://ex.com/paper.pdf")
@@ -632,10 +656,18 @@ def test_pdf_client_fetch_empty_response_is_blocked(monkeypatch):
 @pytest.mark.unit
 def test_pdf_client_fetch_non_pdf_magic_is_blocked(monkeypatch):
     """HttpxPdfClient.fetch returns Blocked when response lacks the %PDF- header."""
-    from deepresearch.sources.pdf import HttpxPdfClient
     import httpx
 
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b"<html>error</html>", content_type="text/html"))
+    from deepresearch.sources.pdf import HttpxPdfClient
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *a, **kw: _MockHttpxResponse(
+            content=b"<html>error</html>",
+            content_type="text/html",
+        ),
+    )
     result = HttpxPdfClient().fetch("http://ex.com/paper.pdf")
     assert isinstance(result, Blocked)
 
@@ -644,10 +676,14 @@ def test_pdf_client_fetch_non_pdf_magic_is_blocked(monkeypatch):
 def test_pdf_fetch_no_client_empty_response_is_blocked(tmp_workspace, monkeypatch):
     """Module-level fetch (client=None) returns Blocked for an empty response body."""
     import httpx
+
     from deepresearch.sources.pdf import fetch as pdf_fetch
 
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b""))
-    result = pdf_fetch("http://ex.com/paper.pdf", bibliography_dir=tmp_workspace["bibliography_dir"])
+    result = pdf_fetch(
+        "http://ex.com/paper.pdf",
+        bibliography_dir=tmp_workspace["bibliography_dir"],
+    )
     assert isinstance(result, Blocked)
 
 
@@ -655,18 +691,30 @@ def test_pdf_fetch_no_client_empty_response_is_blocked(tmp_workspace, monkeypatc
 def test_pdf_fetch_no_client_non_pdf_magic_is_blocked(tmp_workspace, monkeypatch):
     """Module-level fetch (client=None) returns Blocked when bytes lack %PDF- magic."""
     import httpx
+
     from deepresearch.sources.pdf import fetch as pdf_fetch
 
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=b"<html>not a pdf</html>", content_type="text/html"))
-    result = pdf_fetch("http://ex.com/paper.pdf", bibliography_dir=tmp_workspace["bibliography_dir"])
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *a, **kw: _MockHttpxResponse(
+            content=b"<html>not a pdf</html>",
+            content_type="text/html",
+        ),
+    )
+    result = pdf_fetch(
+        "http://ex.com/paper.pdf",
+        bibliography_dir=tmp_workspace["bibliography_dir"],
+    )
     assert isinstance(result, Blocked)
 
 
 @pytest.mark.unit
 def test_pdf_client_fetch_valid_pdf_passes(monkeypatch):
     """HttpxPdfClient.fetch returns bytes for a valid PDF response."""
-    from deepresearch.sources.pdf import HttpxPdfClient
     import httpx
+
+    from deepresearch.sources.pdf import HttpxPdfClient
 
     valid = b"%PDF-1.4 fake content"
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _MockHttpxResponse(content=valid))

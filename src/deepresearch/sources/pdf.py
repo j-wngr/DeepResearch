@@ -1,4 +1,4 @@
-"""PDF fetch and convert via httpx, with pymupdf4llm (default), marker (ocr extra), or remote server."""
+"""PDF fetch and convert via httpx."""
 
 from pathlib import Path
 

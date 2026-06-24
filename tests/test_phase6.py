@@ -46,6 +46,61 @@ def _seed_source(bibliography_dir: Path, url: str, title: str, content: str):
     return save_web(content, url, title, bibliography_dir)
 
 
+class PhaseSixHappyChat(FakeChat):
+    def __init__(self, ref_a, ref_b):
+        super().__init__(
+            {
+                "clarify": [
+                    '{"needs_clarification": false, "questions": []}',
+                    '{"approved": true}',
+                ],
+                "gate": [
+                    _gate_response(True, ref_a.id, "Alpha is supported", "Alpha is supported."),
+                    _gate_response(True, ref_b.id, "Beta is supported", "Beta is supported."),
+                ],
+                "writer": [
+                    json.dumps({"supported": True, "reason": "ok"}),
+                    json.dumps({"supported": True, "reason": "ok"}),
+                ],
+            }
+        )
+        self.ref_a = ref_a
+        self.ref_b = ref_b
+
+    def chat(self, role: str, messages: list) -> str:
+        if role != "synth" or not messages:
+            return super().chat(role, messages)
+        content = messages[0]["content"]
+        if "Decompose this research question" in content:
+            return json.dumps(
+                [
+                    {
+                        "slug": "alpha-topic",
+                        "title": "Alpha Topic",
+                        "scope": "Alpha scope",
+                        "guiding_questions": ["What about alpha?"],
+                        "seed_queries": ["alpha"],
+                    },
+                    {
+                        "slug": "beta-topic",
+                        "title": "Beta Topic",
+                        "scope": "Beta scope",
+                        "guiding_questions": ["What about beta?"],
+                        "seed_queries": ["beta"],
+                    },
+                ]
+            )
+        if "Update the scratchpad" in content:
+            return "Reflect alpha." if "Sub-topic: Alpha Topic" in content else "Reflect beta."
+        if "Draft a sub-report" in content:
+            if "Sub-topic: Alpha Topic" in content:
+                return f"Alpha is supported [{self.ref_a.id}]."
+            return f"Beta is supported [{self.ref_b.id}]."
+        if "Score this draft" in content:
+            return _quality_gate_response(True)
+        return super().chat(role, messages)
+
+
 def _build_config(
     bib_dir: Path,
     state_dir: Path,
@@ -138,6 +193,26 @@ def test_citations_merge_collapses_by_source_id(tmp_workspace):
     assert references[1].id == ref_y.id
     assert body.count("[1]") == 2
     assert "[2]" in body
+
+
+@pytest.mark.unit
+def test_citations_numeric_fallback_uses_source_order(tmp_workspace):
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref_x = _seed_source(bib_dir, "https://example.com/x", "X", "X content")
+    ref_y = _seed_source(bib_dir, "https://example.com/y", "Y", "Y content")
+    subreport = SubReport(
+        subtopic_slug="sub",
+        body="The second source supports this [2].",
+        citations=[
+            Citation(source_id=ref_x.id, claim="X one"),
+            Citation(source_id=ref_y.id, claim="Y one"),
+        ],
+    )
+
+    body, references = citations.merge([subreport], bib_dir)
+
+    assert references[0].id == ref_y.id
+    assert "[1]" in body
 
 
 @pytest.mark.unit
@@ -250,48 +325,7 @@ def _run_happy_graph(tmp_workspace):
             return [ref_b.id]
         return []
 
-    fake_chat = FakeChat(
-        {
-            "clarify": [
-                '{"needs_clarification": false, "questions": []}',
-                '{"approved": true}',
-            ],
-            "synth": [
-                json.dumps(
-                    [
-                        {
-                            "slug": "alpha-topic",
-                            "title": "Alpha Topic",
-                            "scope": "Alpha scope",
-                            "guiding_questions": ["What about alpha?"],
-                            "seed_queries": ["alpha"],
-                        },
-                        {
-                            "slug": "beta-topic",
-                            "title": "Beta Topic",
-                            "scope": "Beta scope",
-                            "guiding_questions": ["What about beta?"],
-                            "seed_queries": ["beta"],
-                        },
-                    ]
-                ),
-                "Reflect alpha.",
-                f"Alpha is supported [{ref_a.id}].",
-                _quality_gate_response(True),
-                "Reflect beta.",
-                f"Beta is supported [{ref_b.id}].",
-                _quality_gate_response(True),
-            ],
-            "gate": [
-                _gate_response(True, ref_a.id, "Alpha is supported", "Alpha is supported."),
-                _gate_response(True, ref_b.id, "Beta is supported", "Beta is supported."),
-            ],
-            "writer": [
-                json.dumps({"supported": True, "reason": "ok"}),
-                json.dumps({"supported": True, "reason": "ok"}),
-            ],
-        }
-    )
+    fake_chat = PhaseSixHappyChat(ref_a, ref_b)
     config = _build_config(
         bib_dir, state_dir, out_dir, fake_chat, retrieve_fn=retrieve_fn
     )

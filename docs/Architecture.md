@@ -49,7 +49,7 @@ Conditional edges out of `evaluate` implement the two-tier refinement loop via e
 
 `plan → acquire (RAG → web/PDF) → relevance gate → reflect → synthesize draft → quality gate`
 
-The quality gate is the exit criterion: it scores **coverage** (every `guiding_question` addressed?) and does a **cheap groundedness self-check against the distilled evidence** (does each claim have a backing quote?). Pass → emit report; fail → loop to `acquire` (bounded by `max_iterations`); cap hit → emit with shortfall flagged. This is a fast per-sub-topic check — authoritative full-document groundedness happens once, globally, at `verify` (#6, §6.4). On emit, the subagent **writes its own** `research/<slug>/<sub-topic-slug>/report.md` (#8). Acquisition may raise a blocking interrupt for a manual download (§6.2).
+The quality gate is the exit criterion: it scores **coverage** (every `guiding_question` addressed?) and does a **cheap groundedness self-check against the distilled evidence** (does each claim have a backing quote?). Pass → emit report; fail → loop to `acquire` (bounded by `max_iterations`); cap hit → emit with shortfall flagged. Acquisition gaps are carried as context through the loop and are surfaced in the final shortfall only if the subagent cannot recover with other sources. This is a fast per-sub-topic check — authoritative full-document groundedness happens once, globally, at `verify` (#6, §6.4). On emit, the subagent **writes its own** `research/<slug>/<sub-topic-slug>/report.md` (#8). Acquisition may raise a blocking interrupt for a manual download (§6.2).
 
 The loop is context-engineered (§10): it carries a **scratchpad** (findings, tried queries, open questions) and **distilled evidence** rather than raw message history. Concretely, once the gate distills a document the raw body is dropped from the subagent's message list (trajectory compaction) — only the `scratchpad`, `EvidenceExtract`s, and `SourceRef`s persist in state.
 
@@ -169,8 +169,8 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
 
 - `embeddings.embed(texts) -> vectors` via Ollama (`mxbai-embed-large` default).
 - `store`: one global Chroma collection under `.deepresearch/chroma/`; `upsert(chunks)`, `query(text, k)`; chunk metadata: `source_id` (the canonical citation key, #5), `content_hash`, `source_path`, `source_url`, `title`, `type`, `super_topic`, `sub_topic`.
-- `index.ingest(source_ref)`: header-aware chunk (~1000/200) → embed → **upsert through the single serialized writer** (a process-wide lock/queue over one shared Chroma client; reads stay concurrent). Chunk ids are deterministic — `chunk_id = f(source_id, chunk_index)` — so upsert is idempotent and two subagents discovering the same source can't duplicate it. Called by the subagent immediately after a save, so siblings can retrieve it within the run.
-- `index.reconcile()`: inbox first (convert/dedup/fold drop-ins), then index pool markdown that is either new or whose `content_hash` has changed since it was last indexed (so a re-fetched web source with updated content is re-embedded, not silently stale). Runs once at `run`/`resume` startup **before** the supervisor fan-out (so it never overlaps subagent writes), and standalone via `research sync`.
+- `index.ingest(source_ref)`: header-aware chunk (~1000/200) → embed → **replace all chunks for that source through the single serialized writer** (a process-wide lock/queue over one shared Chroma client; reads stay concurrent). Chunk ids are deterministic — `chunk_id = f(source_id, chunk_index)` — so replacement is idempotent and removes stale chunks if a source shrinks. Called by the subagent immediately after a save, so siblings can retrieve it within the run.
+- `index.reconcile()`: inbox first (convert/dedup/fold drop-ins), then index pool markdown that is either new or whose `content_hash` has changed since it was last indexed (so a re-fetched web source with updated content is re-embedded, not silently stale). Reconcile uses the source frontmatter for chunk metadata (`type`, `title`, URL, path) and replaces all previous chunks for changed sources. Runs once at `run`/`resume` startup **before** the supervisor fan-out (so it never overlaps subagent writes), and standalone via `research sync`.
 - `retrieve.candidates(query, super_slug)`: top-k → drop below absolute floor → re-rank with provenance boost for matching `super_topic` → dedup chunk hits to distinct `source_id`s.
 
 ### 6.2 Sources
@@ -189,7 +189,7 @@ One deliberate exception: `rag/index.py`'s `reconcile()` calls `sources/inbox.py
 
 ### 6.4 Citations & verification
 
-- `citations.merge(subreports) -> (body, references)`: collapse by `source_id`, renumber `[n]` globally.
+- `citations.merge(subreports) -> (body, references)`: collapse by `source_id`, renumber `[n]` globally. Subagents are prompted to cite stable source ids (`[source_id]`); numeric fallback citations are interpreted against the subagent's whitelisted-source order, not evidence-point order.
 - `verify.check(report, references)`: the **authoritative** pass (the subagent quality gate did only a cheap evidence-level self-check, #6). (1) resolution — every `[n]` resolves to a whitelisted ref; (2) groundedness — LLM confirms each cited claim **against the full source document** (loaded from the pool for this step), not merely against the distilled extract — so the compression in §10 never weakens the citation guarantee, and writer paraphrase drift is caught post-merge. Fail-loud, resolved **within the writer step**: a failing claim is either dropped or fixed by a bounded in-writer revision of that passage using the full source already loaded for grounding (loop locally until clean). No subagent re-run and no extra graph edge — the topology stays `writer → evaluate`. The report is not finalized until clean.
 
 ### 6.5 LLM tiers (`llm.py`)
@@ -210,7 +210,7 @@ Bibliography/                  # knowledge: sources only (bibliography_dir)
     <id>.md                    # pooled markdown (+frontmatter)
     pdfs/<id>.pdf              # raw PDFs
 
-research/                      # deliverables (output_dir)
+Research/                      # deliverables (output_dir)
   <super-topic-slug>/
     brief.md                   # frontmatter: question, slug, thread_id
     report.md                  # unified report (overwritten each round)
@@ -226,7 +226,7 @@ Layered: env vars > config file > defaults. Settings:
 
 - `ollama_base_url`, optional separate `embed_base_url` (defaults to `ollama_base_url`), and optional `ollama_api_key` for authenticated/cloud hosts.
 - Model tiers (`model_fast`, `model_long`, `model_writer`) and `embed_model`.
-- Paths: `bibliography_dir` (default `./Bibliography`), `output_dir` (default `./research`), `state_dir` (default `./.deepresearch`).
+- Paths: `bibliography_dir` (default `./Bibliography`), `output_dir` (default `./Research`), `state_dir` (default `./.deepresearch`).
 - PDF converter: `pdf_converter` (`pymupdf` | `marker` | `remote`, default `pymupdf`); `pdf_converter_url` and `pdf_converter_api_key` for the remote mode.
 - Source quality: `min_source_words` (default 150), `max_link_density` (default 0.5) — web-page pre-filter thresholds.
 - Tavily: `tavily_api_key` — **from environment only**, never persisted; `tavily_request_delay` (default 1.0 s) — inter-request pause to avoid rate-limiting.
@@ -236,7 +236,7 @@ Concrete numeric defaults are chosen at implementation time against the real Oll
 
 ## 9. Concurrency & failure model
 
-- **Concurrency** — `Send` fan-out bounded by `max_concurrency` (remote-Ollama-throughput limited). **RAG writes go through a single serialized writer** (lock/queue over one Chroma client); reads are concurrent; idempotent, deterministic chunk ids make repeated upserts safe. `reconcile()` runs once before fan-out so it never races subagent writes. There is **no runtime full rebuild** — indexing is incremental upsert; the only full reindex is the deliberate, offline embedding-model change (exclusive).
+- **Concurrency** — `Send` fan-out bounded by `max_concurrency` (remote-Ollama-throughput limited). **RAG writes go through a single serialized writer** (lock/queue over one Chroma client); reads are concurrent; deterministic chunk ids plus replace-by-source semantics make repeated indexing safe and clear stale chunks. `reconcile()` runs once before fan-out so it never races subagent writes. There is **no runtime full rebuild** — indexing is incremental by changed source; the only full reindex is the deliberate, offline embedding-model change (exclusive).
 - **Failure** — transient errors: bounded retry + backoff; hard failures / exhausted retries: isolate the sub-topic (status `isolated`, surfaced as a gap). A **blocked fetch is not a failure** — it routes to the acquisition interrupt.
 - **Resumability** — every interrupt is checkpointed; `research resume <slug>` continues. Reconcile-on-resume re-indexes anything added out-of-band.
 

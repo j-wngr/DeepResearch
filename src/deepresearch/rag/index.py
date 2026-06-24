@@ -176,7 +176,7 @@ def ingest(
             sub_topic=sub_topic,
         )
 
-    store.upsert(chunks)
+    store.replace(source_ref.id, chunks)
 
 
 def reconcile(
@@ -214,6 +214,15 @@ def reconcile(
             source_ref = pool.get_ref(source_id, bibliography_dir)
             current_hash = source_ref.content_hash
         except Exception:  # noqa: BLE001
+            source_ref = SourceRef(
+                id=source_id,
+                type="pdf",
+                url=None,
+                title=md_file.name,
+                source_path=f"_sources/{source_id}.md",
+                retrieved_at="",
+                content_hash="",
+            )
             current_hash = ""
 
         if source_id in stored_hashes and stored_hashes[source_id] == current_hash:
@@ -232,17 +241,17 @@ def reconcile(
             chunk["embedding"] = vector
             chunk["metadata"] = _enrich_metadata(
                 chunk,
-                source_id=source_id,
+                source_id=source_ref.id,
                 content_hash=current_hash,
-                source_path=f"_sources/{source_id}.md",
-                source_url="",
-                title=md_file.name,
-                source_type="web",
+                source_path=source_ref.source_path,
+                source_url=source_ref.url or "",
+                title=source_ref.title,
+                source_type=source_ref.type,
                 super_topic="",
                 sub_topic="",
             )
 
-        store.upsert(chunks)
+        store.replace(source_id, chunks)
         newly_indexed += 1
 
     return newly_indexed
