@@ -58,6 +58,7 @@ class Config:
         self.llm_max_retries = self._get_int("LLM_MAX_RETRIES", 3)
         self.llm_retry_initial_interval = self._get_float("LLM_RETRY_INITIAL_INTERVAL", 0.5)
         self.tavily_max_retries = self._get_int("TAVILY_MAX_RETRIES", 3)
+        self.tavily_retry_initial_interval = self._get_float("TAVILY_RETRY_INITIAL_INTERVAL", 1.0)
         self.tavily_request_delay = self._get_float("TAVILY_REQUEST_DELAY", 1.0)
 
     @classmethod
