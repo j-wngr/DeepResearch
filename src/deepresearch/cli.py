@@ -143,29 +143,20 @@ def _collect_acquire_responses(requests: list[dict]) -> list[dict]:
 def _build_resume_value(interrupts):
     """Collect user responses for pending interrupts.
 
-    Returns a plain value for a single interrupt, or a {id: value} dict for
-    multiple interrupts (required by LangGraph when len(pending) > 1).
+    Always returns a {interrupt_id: value} dict.  LangGraph requires the map
+    form whenever there are multiple pending interrupts in the checkpoint —
+    which can exceed the number visible in result["__interrupt__"] when Send-
+    spawned tasks write their INTERRUPT without emitting it to the stream.
+    Using the map form unconditionally (even for a single interrupt) sets
+    resume_is_map=True inside LangGraph, bypassing the pending-count check
+    entirely and letting hidden tasks re-interrupt safely on the next tick.
     """
     all_acquire = all(iv.value.get("type") == "acquire" for iv in interrupts)
 
-    if len(interrupts) == 1:
-        iv = interrupts[0]
-        if iv.value.get("type") == "acquire":
-            return _collect_acquire_responses(iv.value.get("requests", []))
-        return typer.prompt("\nYour response")
-
-    # Multiple pending interrupts — LangGraph requires a {interrupt_id: value} mapping.
     if all_acquire:
-        # Aggregate all requests so the user only has to press Enter once.
-        all_requests = []
-        for iv in interrupts:
-            all_requests.extend(iv.value.get("requests", []))
+        # All acquire: single Enter prompt covers every parallel interrupt.
         typer.prompt("\nPress Enter when ready", default="", show_default=False)
-        # Build per-interrupt response dicts from the single file-presence check.
-        resume_map = {}
-        for iv in interrupts:
-            resume_map[iv.id] = _check_acquire_files(iv.value.get("requests", []))
-        return resume_map
+        return {iv.id: _check_acquire_files(iv.value.get("requests", [])) for iv in interrupts}
 
     resume_map = {}
     for iv in interrupts:
