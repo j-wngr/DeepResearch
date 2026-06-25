@@ -37,7 +37,7 @@ def link_density(markdown: str) -> float:
     A high ratio (> 0.5) indicates a directory or index page rather than prose.
     Returns 0.0 for empty documents.
     """
-    total = len(markdown.split())
+    total = word_count(markdown)
     if total == 0:
         return 0.0
     linked = sum(len(m.group(1).split()) for m in _LINK_RE.finditer(markdown))

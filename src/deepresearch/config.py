@@ -69,6 +69,8 @@ class Config:
         # When False, the LLM source quality gate is disabled for newly fetched
         # sources; heuristic checks in sources/quality.py still apply via prune.
         self.quality_gate_enabled = self._get_bool("QUALITY_GATE_ENABLED", True)
+        # Maximum new sub-topics added per autonomous evaluate round from coverage gaps.
+        self.max_autonomous_additions = self._get_int("MAX_AUTONOMOUS_ADDITIONS", 2)
 
     @classmethod
     def get(cls, env_file: Path | str | None = None) -> "Config":

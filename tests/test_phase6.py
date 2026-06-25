@@ -417,3 +417,77 @@ def test_bibliography_holds_no_reports(tmp_workspace):
     _, _, bib_dir, _ = _run_happy_graph(tmp_workspace)
 
     assert not list((bib_dir / "_sources").rglob("report.md"))
+
+
+# ── Regression: verify FileNotFoundError guard ──────────────────────────────
+
+@pytest.mark.unit
+def test_verify_ground_claims_missing_source_skipped(tmp_workspace):
+    """ground_claims marks a claim unsupported when its source is deleted mid-run."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref = _seed_source(bib_dir, "https://example.com/deleted", "Deleted", "Some content.")
+    (bib_dir / "_sources" / f"{ref.id}.md").unlink()
+    body = "A claim about the deleted source [1]."
+
+    verdicts = verify.ground_claims(body, [ref], bib_dir, chat_fn=FakeChat({}).chat)
+
+    assert len(verdicts) == 1
+    assert verdicts[0].supported is False
+    assert "source deleted" in verdicts[0].reason
+
+
+# ── Regression: _revise partial-response path ────────────────────────────────
+
+@pytest.mark.unit
+def test_verify_revise_partial_response_applies_available_fixes(tmp_workspace):
+    """_revise applies the fixes it receives even when the LLM returns fewer lines than claims."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref_a = _seed_source(bib_dir, "https://example.com/fix-a", "A", "Alpha is correct.")
+    ref_b = _seed_source(bib_dir, "https://example.com/fix-b", "B", "Beta is correct.")
+    body = "Alpha is wrong [1]. Beta is wrong [2]."
+    fake_chat = FakeChat(
+        {
+            "writer": [
+                json.dumps({"supported": False, "reason": "wrong"}),
+                json.dumps({"supported": False, "reason": "wrong"}),
+                "Alpha is correct [1].",  # only 1 line for 2 unsupported claims
+            ]
+        }
+    )
+
+    result = verify.check(body, [ref_a, ref_b], bib_dir, chat_fn=fake_chat.chat, max_revisions=1)
+
+    # The partial fix should have been applied — not the original body wholesale.
+    assert "Alpha is correct" in result.body
+
+
+# ── Writer synthesis pass ────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_writer_synthesis_fallback_on_empty_response():
+    from deepresearch.nodes.writer import _synthesize
+
+    body = "Some text [1]. More text [2]."
+    result = _synthesize(body, "test question", FakeChat({}).chat)
+    assert result == body
+
+
+@pytest.mark.unit
+def test_writer_synthesis_fallback_when_citations_dropped():
+    from deepresearch.nodes.writer import _synthesize
+
+    body = "Some text [1]."
+    fake_chat = FakeChat({"writer_synthesis": ["Synthesized text without any citation markers."]})
+    result = _synthesize(body, "test question", fake_chat.chat)
+    assert result == body
+
+
+@pytest.mark.unit
+def test_writer_synthesis_uses_llm_when_citations_preserved():
+    from deepresearch.nodes.writer import _synthesize
+
+    body = "Some text [1]."
+    synthesized = "Executive summary.\n\nSome text [1]. More detail."
+    fake_chat = FakeChat({"writer_synthesis": [synthesized]})
+    result = _synthesize(body, "test question", fake_chat.chat)
+    assert result == synthesized

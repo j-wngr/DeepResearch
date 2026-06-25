@@ -121,23 +121,34 @@ def _display_interrupt(data):
 
 
 def _check_acquire_files(requests: list[dict]) -> list[dict]:
-    """Check which requested files are present and return per-request responses (no prompt)."""
+    """Check which requested files are present; prompt for an alternative URL if not found."""
     responses = []
     found = []
-    missing = []
     for req in requests:
+        title = req.get("title") or req["source_id"]
         if Path(req["save_path"]).exists():
             responses.append(
                 {"source_id": req["source_id"], "kind": "saved", "save_path": req["save_path"]}
             )
-            found.append(req.get("title") or req["source_id"])
+            found.append(title)
         else:
-            responses.append({"source_id": req["source_id"], "kind": "unobtainable"})
-            missing.append(req.get("title") or req["source_id"])
+            alt = typer.prompt(
+                f"  '{title}' not found in inbox. Paste an alternative URL (or Enter to skip)",
+                default="",
+                show_default=False,
+            )
+            if alt.strip():
+                responses.append(
+                    {
+                        "source_id": req["source_id"],
+                        "kind": "alternative",
+                        "alternative_url": alt.strip(),
+                    }
+                )
+            else:
+                responses.append({"source_id": req["source_id"], "kind": "unobtainable"})
     if found:
         typer.echo(f"  Found ({len(found)}): {', '.join(found)}")
-    if missing:
-        typer.echo(f"  Not found — skipping ({len(missing)}): {', '.join(missing)}")
     return responses
 
 
@@ -417,6 +428,7 @@ def improve(slug: str) -> None:
                 "user_approved": False,
                 "pending_handoff": True,
                 "auto_round": 0,
+                "round": 0,
                 "brief": mark_all_dirty(brief),
             },
             as_node="writer",

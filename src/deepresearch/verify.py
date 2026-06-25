@@ -108,7 +108,16 @@ def ground_claims(
             verdicts.append(ClaimVerdict(n, "", ref.id, False, "no claim sentence"))
             continue
         if ref.id not in markdown_cache:
-            markdown_cache[ref.id] = pool_module.get(ref.id, bibliography_dir)
+            try:
+                markdown_cache[ref.id] = pool_module.get(ref.id, bibliography_dir)
+            except FileNotFoundError:
+                logger.warning(
+                    "Source %s missing during groundedness check; skipping claim", ref.id
+                )
+                verdicts.append(
+                    ClaimVerdict(n, claim, ref.id, False, "source deleted during verification")
+                )
+                continue
         markdown = markdown_cache[ref.id]
         prompt = (
             f"Claim: {claim}\n\n"
@@ -156,7 +165,11 @@ def _revise(
             revised = _remove_sentence(revised, verdict.claim)
         return revised
     if len(lines) < len(unsupported):
-        return body
+        logger.warning(
+            "_revise: LLM returned %d lines for %d unsupported claims; applying partial revision",
+            len(lines),
+            len(unsupported),
+        )
     for verdict, line in zip(unsupported, lines, strict=False):
         if line == "DROP":
             revised = _remove_sentence(revised, verdict.claim)

@@ -236,6 +236,53 @@ def test_thin_single_source_answer_flagged_as_partial(tmp_workspace):
     assert updates["history"][0].coverage_score < 1.0
 
 
+@pytest.mark.unit
+def test_format_sources_truncates_to_doc_size_cap(tmp_workspace, monkeypatch):
+    """_format_sources caps each source at doc_size_cap characters."""
+    from deepresearch.nodes.evaluate import _format_sources
+
+    monkeypatch.setenv("DOC_SIZE_CAP", "20")
+    reset_config()
+    bib_dir = tmp_workspace["bibliography_dir"]
+    ref = save_web("A" * 100, "https://example.com/long", "Long", bib_dir)
+    citation = Citation(source_id=ref.id, claim="something")
+
+    result = _format_sources([citation], bib_dir)
+
+    assert "A" * 100 not in result
+    assert "A" * 20 in result
+    reset_config()
+
+
+@pytest.mark.unit
+def test_autonomous_round_adds_genuinely_new_subtopics():
+    """_add_queued_subtopics adds subtopics whose guiding questions are not already covered."""
+    from deepresearch.config import get_config
+    from deepresearch.models import CoverageReport, QuestionScore
+    from deepresearch.nodes.evaluate import _add_queued_subtopics
+
+    existing = SubTopic(
+        slug="alpha", title="Alpha", scope="A", guiding_questions=["What is alpha?"]
+    )
+    brief = Brief(question="Q", slug="q", thread_id="q", subtopics=[existing])
+    new_sub = SubTopic(
+        slug="gamma", title="Gamma", scope="G", guiding_questions=["What is gamma?"]
+    )
+    dup_sub = SubTopic(
+        slug="alpha-2", title="Alpha 2", scope="A2", guiding_questions=["What is alpha?"]
+    )
+    coverage = CoverageReport(
+        per_question=[], gaps=[], followups=[], queued_additions=[new_sub, dup_sub]
+    )
+
+    result = _add_queued_subtopics(brief, coverage, get_config())
+
+    slugs = [st.slug for st in result.subtopics]
+    assert "gamma" in slugs
+    assert "alpha-2" not in slugs
+    assert "alpha" in slugs
+
+
 @pytest.mark.integration
 def test_single_report_md_overwritten_each_round(tmp_workspace):
     path = tmp_workspace["output_dir"] / "q" / "report.md"

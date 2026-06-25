@@ -38,7 +38,8 @@ def load_runs(state_dir: Path, output_dir: Path | None = None) -> list[RunSummar
             return []
     summaries = []
     for (thread_id,) in rows:
-        summary = load_run(state_dir, output_dir or Path("research"), thread_id)
+        from deepresearch.config import get_config
+        summary = load_run(state_dir, output_dir or get_config().output_dir, thread_id)
         if summary is not None:
             summaries.append(summary)
     return summaries

@@ -38,13 +38,13 @@ Guiding invariants (see DesignBrief for rationale):
 | `supervisor` | **conditional routing function** (not a separate node in LangGraph) | fan out one `research_subagent` per in-scope sub-topic by returning `Send`s | → `research_subagent` (×N) |
 | `research_subagent` | subgraph | per-sub-topic ReAct loop (§3.2); writes its per-sub `report.md` | → `gather` |
 | `gather` | join node | fan-in barrier the subagents return to; merge is done by the `subreports` channel reducer | → `writer` |
-| `writer` | node | synthesize unified report; merge/renumber citations; run verification; persist `report.md` + `references.json` | → `evaluate` |
+| `writer` | node | merge/renumber citations from sub-reports; LLM synthesis pass (executive summary, dedup, contradiction note); verify groundedness; persist `report.md` + `references.json` | → `evaluate` |
 | `evaluate` | node (+interrupts) | score coverage+support; route the refinement loop | → `supervisor` (re-run) \| `END` |
 
 Conditional edges out of `evaluate` implement the two-tier refinement loop via explicit state (#4):
 
-- `supervisor` reads `mode`: in `autonomous` it fans out only **`dirty`** sub-topics; in `user_facing` it fans out **all** of them.
-- `evaluate` decides each visit: if gaps remain and `auto_round < cap` and coverage is still improving → set `mode=autonomous`, mark changed sub-topics `dirty`, loop to `supervisor` (no interrupt). Otherwise prepare the hand-off: set `mode=user_facing` + `pending_handoff=True` and loop once more for the full consistency re-run.
+- `supervisor` reads `mode`: in `autonomous` it fans out only **`dirty`** sub-topics (and skips any whose subreport has a `"subagent isolated:"` shortfall — permanent hard failures are not retried); in `user_facing` it fans out **all** non-isolated sub-topics.
+- `evaluate` decides each visit: if gaps remain and `auto_round < cap` and coverage is still improving → set `mode=autonomous`, mark gap sub-topics `dirty`, and merge up to `max_autonomous_additions` (default 2) genuinely new sub-topics from `CoverageReport.queued_additions` into the brief, then loop to `supervisor` (no interrupt). Otherwise prepare the hand-off: set `mode=user_facing` + `pending_handoff=True` and loop once more for the full consistency re-run.
 - When `evaluate` runs again with `pending_handoff` set, it does **not** loop — it raises the user interrupt (or `END` after approval). This flag is what prevents an infinite auto-loop and guarantees the user sees a freshly re-run, consistent report.
 
 ### 3.2 Subagent subgraph

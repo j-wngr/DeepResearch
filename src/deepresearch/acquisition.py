@@ -27,15 +27,11 @@ def apply_response(
     original_url: str,
     original_title: str,
     bibliography_dir: Path,
-    chat_fn,
-    tavily_client,
     pdf_client,
     store,
     embeddings,
 ) -> tuple[SourceRef | None, str | None]:
     """Apply a resume response and return either a SourceRef or a permanent gap."""
-    del chat_fn, tavily_client
-
     from deepresearch.rag import index as rag_index
     from deepresearch.sources import pdf, pool
 
@@ -61,7 +57,8 @@ def apply_response(
 
     fetch_result = pdf.fetch(response.alternative_url or "", pdf_client, bibliography_dir)
     if isinstance(fetch_result, Blocked):
-        return None, f"alternative also blocked: {fetch_result.reason}"
+        # Include the alternative URL so the caller can skip it in future iterations.
+        return None, f"alternative also blocked: {response.alternative_url}"
 
     markdown = pdf.convert(fetch_result, converter=pdf_client)
     source_ref = pool.save_pdf(

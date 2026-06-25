@@ -426,6 +426,30 @@ def test_reconcile_folds_acquired_pdf_under_known_id(tmp_workspace):
 
 
 @pytest.mark.unit
+def test_apply_response_alternative_blocked_gap_includes_url(tmp_workspace):
+    """apply_response embeds the alternative URL (not the reason) in the blocked gap string."""
+    bib_dir = tmp_workspace["bibliography_dir"]
+    alt_url = "https://example.com/alternative.pdf"
+    response = AcquisitionResponse(source_id="deadbeef", kind="alternative", alternative_url=alt_url)
+    pdf = FakePdf(pdfs={}, conversions={}, blocked_urls={alt_url})
+
+    source_ref, gap = acquisition.apply_response(
+        response,
+        original_url="https://example.com/original.pdf",
+        original_title="Original",
+        bibliography_dir=bib_dir,
+        pdf_client=pdf,
+        store=None,
+        embeddings=None,
+    )
+
+    assert source_ref is None
+    assert gap is not None
+    assert gap.startswith("alternative also blocked: ")
+    assert alt_url in gap
+
+
+@pytest.mark.unit
 def test_reconcile_skips_acquired_pdf_already_pooled(tmp_workspace):
     url = "https://example.com/already.pdf"
     source_id = hash_url(url)

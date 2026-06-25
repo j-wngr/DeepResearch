@@ -479,6 +479,40 @@ def test_supervisor_mode_selection():
     assert len(sends) == 0
 
 
+@pytest.mark.unit
+def test_supervisor_skips_isolated_subtopics():
+    """Supervisor never re-dispatches subtopics whose subreport has an isolation shortfall."""
+    subtopics = [
+        SubTopic(slug="broken", title="Broken", scope="broken", dirty=True),
+        SubTopic(slug="good", title="Good", scope="good", dirty=True),
+    ]
+    brief = Brief(question="Q", slug="s", thread_id="s", subtopics=subtopics)
+    isolated_report = SubReport(
+        subtopic_slug="broken",
+        body="",
+        citations=[],
+        shortfall="subagent isolated: RuntimeError: boom",
+    )
+    state = {
+        "question": "Q",
+        "slug": "s",
+        "brief": brief,
+        "round": 0,
+        "auto_round": 0,
+        "mode": "user_facing",
+        "pending_handoff": False,
+        "subreports": {"broken": isolated_report},
+        "report": None,
+        "coverage": None,
+        "history": [],
+    }
+
+    sends = supervisor(state)
+
+    assert len(sends) == 1
+    assert sends[0].arg["subtopic"].slug == "good"
+
+
 @pytest.mark.integration
 def test_cross_process_resume(tmp_workspace, monkeypatch):
     """Resume works after discarding the graph/checkpointer and rebuilding from disk."""

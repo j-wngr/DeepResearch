@@ -58,7 +58,7 @@ class ResearchState(TypedDict):
     subreports: Annotated[dict[str, SubReport], merge_subreports]
     report: str | None
     # Plain list[SourceRef]; no reducer because the writer overwrites it in one step.
-    report_references: list
+    report_references: list[SourceRef]
     verify_ok: bool
     verify_attempts: int
     verify_unsupported: list

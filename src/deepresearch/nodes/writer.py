@@ -1,7 +1,9 @@
-"""Writer node: merge subreports, renumber citations, verify, persist."""
+"""Writer node: merge subreports, renumber citations, synthesize, verify, persist."""
 
 import json
 import logging
+import re
+from collections.abc import Callable
 from pathlib import Path
 
 from langchain_core.runnables import RunnableConfig
@@ -12,6 +14,8 @@ from deepresearch.paths import output_path
 from deepresearch.state import ResearchState
 
 logger = logging.getLogger("deepresearch.nodes.writer")
+
+_CITATION_RE = re.compile(r"\[\d+\]")
 
 
 def _build_references_json(slug: str, references) -> dict:
@@ -31,6 +35,38 @@ def _build_references_json(slug: str, references) -> dict:
             }
         )
     return {"slug": slug, "sources": sources}
+
+
+def _synthesize(body: str, question: str, chat_fn: Callable) -> str:
+    """Ask the writer LLM to add an executive summary and reconcile cross-topic overlaps.
+
+    Falls back to the concatenated body if the LLM returns empty output or
+    drops all citation markers (which would break downstream verification).
+    """
+    if not body.strip():
+        return body
+    prompt = (
+        "You are synthesizing a research report from sub-topic sections.\n\n"
+        f"Research question: {question}\n\n"
+        "Current draft (IMPORTANT: do NOT remove or renumber any [n] citation markers):\n"
+        "---\n"
+        f"{body}\n"
+        "---\n\n"
+        "Tasks:\n"
+        "1. Write a 2-4 sentence executive summary at the very top.\n"
+        "2. Merge duplicate claims across sections (keep the better-supported one with its [n]).\n"
+        "3. Where sections genuinely contradict each other, note both views in one sentence.\n"
+        "4. Return the full revised report. Every [n] marker must be preserved exactly.\n"
+    )
+    response = chat_fn("writer_synthesis", [{"role": "user", "content": prompt}])
+    if not response or not response.strip():
+        logger.warning("synthesis returned empty response; using concatenated body")
+        return body
+    # Safety guard: if the body had citations but the LLM stripped them all, fall back.
+    if _CITATION_RE.search(body) and not _CITATION_RE.search(response):
+        logger.warning("synthesis dropped all citation markers; using concatenated body")
+        return body
+    return response
 
 
 def _ordered_subreports(state: ResearchState) -> list:
@@ -71,6 +107,7 @@ def writer(state: ResearchState, config: RunnableConfig) -> dict:
         bibliography_dir,
         question=state.get("question", ""),
     )
+    body = _synthesize(body, state.get("question", ""), chat_fn)
     result = verify_mod.check(body, references, bibliography_dir, chat_fn=chat_fn)
     final_body = result.body
 

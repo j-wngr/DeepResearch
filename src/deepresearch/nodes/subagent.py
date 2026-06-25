@@ -121,6 +121,10 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
             url = gap.removeprefix("source unobtainable: ")
             from deepresearch.paths import hash_url
             unobtainable_ids.add(hash_url(url))
+        elif gap.startswith("alternative also blocked: "):
+            url = gap.removeprefix("alternative also blocked: ")
+            from deepresearch.paths import hash_url
+            unobtainable_ids.add(hash_url(url))
 
     queries = _build_queries(sub, state["scratchpad"])
     if not queries:
@@ -238,8 +242,6 @@ def _acquire_node(state: SubAgentState, config: RunnableConfig) -> dict:
                     original_url=request.url,
                     original_title=request.title,
                     bibliography_dir=bibliography_dir,
-                    chat_fn=configurable.get("chat_fn"),
-                    tavily_client=tavily_client,
                     pdf_client=pdf_client,
                     store=store,
                     embeddings=embeddings,

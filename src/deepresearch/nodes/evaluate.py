@@ -82,11 +82,13 @@ def evaluate_node(state: ResearchState, config: RunnableConfig) -> dict:
             }
         )
     elif next_auto_round < cfg.auto_round_cap and not plateau and next_round < cfg.max_rounds:
+        updated_brief = _mark_dirty_for_gaps(state["brief"], coverage)
+        updated_brief = _add_queued_subtopics(updated_brief, coverage, cfg)
         updates.update(
             {
                 "mode": "autonomous",
                 "pending_handoff": False,
-                "brief": _mark_dirty_for_gaps(state["brief"], coverage),
+                "brief": updated_brief,
             }
         )
     else:
@@ -241,6 +243,7 @@ def _coerce_followups(response: Any) -> list[dict]:
 def _format_sources(citations, bibliography_dir: Path) -> str:
     lines: list[str] = []
     seen: set[str] = set()
+    cap = get_config().doc_size_cap
     for citation in citations:
         source_id = citation.source_id
         if source_id in seen:
@@ -250,8 +253,32 @@ def _format_sources(citations, bibliography_dir: Path) -> str:
             markdown = pool.get(source_id, bibliography_dir)
         except FileNotFoundError:
             markdown = ""
+        if len(markdown) > cap:
+            markdown = markdown[:cap]
         lines.append(f"Source {source_id}:\n{markdown}")
     return "\n---\n".join(lines)
+
+
+def _add_queued_subtopics(brief: Brief, coverage: CoverageReport, cfg) -> Brief:
+    """Merge coverage-derived new sub-topics into the brief for the next autonomous round.
+
+    Skips any queued subtopic whose guiding questions are already fully covered by
+    an existing subtopic — these are refinement needs, not genuinely new topics.
+    """
+    if not coverage.queued_additions:
+        return brief
+    existing_slugs = {st.slug for st in brief.subtopics}
+    existing_questions = {q for st in brief.subtopics for q in st.guiding_questions}
+    new_subs = [
+        st
+        for st in coverage.queued_additions
+        if st.slug not in existing_slugs
+        and not all(q in existing_questions for q in st.guiding_questions)
+    ]
+    if not new_subs:
+        return brief
+    max_add = getattr(cfg, "max_autonomous_additions", 2)
+    return brief.model_copy(update={"subtopics": list(brief.subtopics) + new_subs[:max_add]})
 
 
 def _fully_covered(coverage: CoverageReport) -> bool:
