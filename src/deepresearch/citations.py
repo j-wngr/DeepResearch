@@ -1,11 +1,14 @@
 """Citation resolution, merge, and global renumber."""
 
+import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
 
 from deepresearch.models import SourceRef, SubReport
 from deepresearch.sources import pool as pool_module
+
+logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[([0-9a-f]{8,}|\d+)\]")
 
@@ -62,7 +65,24 @@ def merge(
     parts.extend(sections)
     body = "\n\n".join(parts).strip() + ("\n" if parts else "")
 
-    references = [
-        pool_module.get_ref(source_id, bibliography_dir) for source_id in global_source_ids
-    ]
+    # Build references; skip sources deleted from the pool (e.g. by prune or
+    # the inline quality gate) so a missing file never crashes the writer.
+    references: list[SourceRef] = []
+    missing: set[str] = set()
+    for source_id in global_source_ids:
+        try:
+            references.append(pool_module.get_ref(source_id, bibliography_dir))
+        except FileNotFoundError:
+            logger.warning("Cited source %s not found in pool; dropping citation", source_id)
+            missing.add(source_id)
+
+    if missing:
+        # Strip citation markers that resolved to missing sources from the body.
+        missing_nums = {str(global_numbers[sid]) for sid in missing}
+        body = re.sub(
+            r"\[(" + "|".join(re.escape(n) for n in missing_nums) + r")\]",
+            "",
+            body,
+        )
+
     return body, references
